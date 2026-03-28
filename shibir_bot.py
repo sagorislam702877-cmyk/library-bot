@@ -4,7 +4,7 @@ import os
 import time
 import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 from threading import Thread
@@ -12,8 +12,8 @@ from threading import Thread
 # ১. আপনার তথ্য
 TOKEN = '8762483955:AAFSG9blBOjRFbO2S5rDY2U3NxMX9y9oEgo'
 ADMIN_ID = 8596482199 
+ADMIN_USERNAME = "Sagor_Islam_21" # আপনার ইউজারনেম
 
-# ডাইনামিক কাউন্টার
 active_searches = 0
 
 # ২. ওয়েব সার্ভার
@@ -50,33 +50,49 @@ def save_user(user_id):
     except Exception as e:
         logging.error(f"User Save Error: {e}")
 
-# ৫. স্টার্ট কমান্ড
+# ৫. স্টার্ট কমান্ড (বাটনসহ)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user.id)
-    welcome_text = "✨ **আসসালামু আলাইকুম!** ✨\n\nবইয়ের নাম লিখে মেসেজ দিন। আমাদের বট অটোমেটিক আপনার ফাইলটি খুঁজে দেবে। 📚"
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    
+    keyboard = [[InlineKeyboardButton("👨‍💻 অ্যাডমিনের সাথে যোগাযোগ", url=f"https://t.me/{ADMIN_USERNAME}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    welcome_text = (
+        "✨ **আসসালামু আলাইকুম!** ✨\n\n"
+        "আমাদের **অনলাইন লাইব্রেরি বটে** আপনাকে স্বাগত। 📚\n\n"
+        "এটি ছাত্রশিবিরের কোনো অফিসিয়াল বট নয়। শুধুমাত্র সহযোগিতার জন্য তৈরি করা হয়েছে।\n\n"
+        "🔍 **বই খুঁজবেন যেভাবে:**\n"
+        "বইয়ের নাম লিখে মেসেজ দিন। বট আপনাকে স্বয়ংক্রিয়ভাবে পিডিএফ দেবে।"
+    )
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-# ৬. ডাইনামিক হ্যান্ডলার (বট নিজেই লিমিট ঠিক করবে)
+# ৬. অ্যাডমিন কন্টাক্ট কমান্ড
+async def admin_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👨‍💻 **অ্যাডমিন ইনফো:**\n\n"
+        "বট ব্যবহারে সমস্যা হলে বা নতুন বই দিতে চাইলে সরাসরি মেসেজ দিন:\n"
+        f"👉 @{ADMIN_USERNAME}\n\n"
+        f"আপনার ইউজার আইডি: `{update.effective_user.id}`"
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+# ৭. ডাইনামিক হ্যান্ডলার (সার্চ ও আপলোড)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_searches
-    
     try:
         if update.message.text:
             query = update.message.text.lower().strip()
             
-            # --- ডাইনামিক লিমিট লজিক ---
+            # ডাইনামিক ওয়েটিং লজিক
             wait_time = 0
-            if active_searches > 10:
-                wait_time = 5  # ১০ জনের বেশি হলে ৫ সেকেন্ড অপেক্ষা
-            elif active_searches > 5:
-                wait_time = 2  # ৫ জনের বেশি হলে ২ সেকেন্ড অপেক্ষা
+            if active_searches > 10: wait_time = 5
+            elif active_searches > 5: wait_time = 2
                 
             if wait_time > 0:
-                await update.message.reply_text(f"⏳ বর্তমানে **{active_searches} জন** ইউজার সার্চ করছেন। সার্ভারের ওপর চাপ কমাতে আপনাকে {wait_time} সেকেন্ড অপেক্ষা করতে হচ্ছে...")
+                await update.message.reply_text(f"⏳ বর্তমানে **{active_searches} জন** সার্চ করছেন। দয়া করে {wait_time} সেকেন্ড অপেক্ষা করুন...")
                 await asyncio.sleep(wait_time)
             
-            active_searches += 1 # সার্চ শুরু
-            
+            active_searches += 1
             book_sheet, _ = get_sheets()
             all_books = book_sheet.get_all_records()
             found_books = [row for row in all_books if query in str(row['Book Name']).lower()]
@@ -89,7 +105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("❌ দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
             
-            active_searches -= 1 # সার্চ শেষ
+            active_searches -= 1
 
         elif update.message.document and update.effective_user.id == ADMIN_ID:
             doc = update.message.document
@@ -103,7 +119,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if active_searches > 0: active_searches -= 1
         logging.error(f"Error: {e}")
 
-# ৭. স্ট্যাটাস চেক
+# ৮. পরিসংখ্যান
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
         try:
@@ -119,9 +135,10 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("admin", admin_info))
     app.add_handler(MessageHandler(filters.Document.PDF | (filters.TEXT & ~filters.COMMAND), handle_message))
     app.run_polling()
 
 if __name__ == '__main__':
     main()
-    
+                            
