@@ -2,3 +2,5 @@ python-telegram-bot
 gspread
 oauth2client
 flask
+fuzzywuzzy
+python-Levenshtein
