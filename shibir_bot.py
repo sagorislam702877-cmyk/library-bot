@@ -1,20 +1,37 @@
 import logging
 import gspread
+import os
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
+from threading import Thread
 
-# ১. আপনার সরবরাহকৃত তথ্য
+# ১. আপনার তথ্য
 TOKEN = '8762483955:AAFSG9blBOjRFbO2S5rDY2U3NxMX9y9oEgo'
 ADMIN_ID = 8596482199 
 
-# ২. গুগল শিট কানেক্ট করার ফাংশন
+# ২. Render এর জন্য ওয়েব সার্ভার (যাতে Timeout না হয়)
+web_app = Flask('')
+
+@web_app.route('/')
+def home():
+    return "I am alive!"
+
+def run_web():
+    # Render ডিফল্টভাবে ১০০০০ পোর্টে রান করে
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# ৩. গুগল শিট কানেক্ট
 def connect_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # নিশ্চিত করুন creds.json ফাইলটি একই ফোল্ডারে আছে
     creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
     client = gspread.authorize(creds)
-    # শিটের নাম 'MyBotDB' হতে হবে
     return client.open("MyBotDB").sheet1 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -25,47 +42,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sheet = connect_sheet()
     
-    # বই আপলোড (শুধুমাত্র আপনি আপনার আইডি থেকে পিডিএফ পাঠালে সেভ হবে)
+    # বই আপলোড (শুধুমাত্র অ্যাডমিন)
     if update.message.document and update.effective_user.id == ADMIN_ID:
         doc = update.message.document
         if doc.mime_type == 'application/pdf':
-            # ফাইলের নাম থেকে '.pdf' বাদ দিয়ে পরিষ্কার নাম নেওয়া
             book_name = doc.file_name.lower().replace(".pdf", "").strip()
-            file_id = doc.file_id
-            
-            # গুগল শিটে কলাম অনুযায়ী সেভ করা
-            sheet.append_row([book_name, file_id])
+            sheet.append_row([book_name, doc.file_id])
             await update.message.reply_text(f"✅ লাইব্রেরিতে যুক্ত হয়েছে: {doc.file_name}")
             return
 
-    # বই সার্চ (যেকোনো ইউজার টেক্সট পাঠালে)
+    # বই সার্চ
     if update.message.text:
         query = update.message.text.lower().strip()
         all_books = sheet.get_all_records()
-        
-        found = False
         for row in all_books:
-            # যদি ইউজারের লেখা নাম গুগল শিটের কোনো নামের সাথে আংশিক মিলে যায়
             if query in str(row['Book Name']):
                 await update.message.reply_text(f"বই পাওয়া গেছে: {row['Book Name']}\nপাঠানো হচ্ছে...")
                 await context.bot.send_document(chat_id=update.effective_chat.id, document=row['File ID'])
-                found = True
-                break
-        
-        if not found:
-            await update.message.reply_text("দুঃখিত, এই নামের কোনো বই আমাদের ডাটাবেসে নেই। সঠিক নাম লিখে চেষ্টা করুন।")
+                return
+        await update.message.reply_text("দুঃখিত, বইটি পাওয়া যায়নি। সঠিক নাম লিখুন।")
 
 def main():
-    # বট অ্যাপ্লিকেশন তৈরি
-    app = Application.builder().token(TOKEN).build()
+    # ওয়েব সার্ভার শুরু (Render কে সচল রাখতে)
+    keep_alive()
     
-    # কমান্ড এবং মেসেজ হ্যান্ডলার যুক্ত করা
+    # বট শুরু
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.PDF | (filters.TEXT & ~filters.COMMAND), handle_message))
     
-    print("বট সচল আছে এবং আপনার আইডির জন্য অপেক্ষা করছে...")
+    print("বট এবং ওয়েব সার্ভার সচল আছে...")
     app.run_polling()
 
 if __name__ == '__main__':
     main()
-      
+    
