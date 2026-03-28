@@ -35,14 +35,23 @@ def connect_sheet():
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# --- নতুন সাজানো স্টার্ট মেসেজ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("আসসালামু আলাইকুম! বইয়ের নাম বা খণ্ড লিখে সার্চ দিন।\nশুধু বইয়ের নাম লিখলে সব খণ্ড পাবেন।")
+    welcome_text = (
+        "✨ **আসসালামু আলাইকুম!** ✨\n\n"
+        "আমাদের **অনলাইন লাইব্রেরি বটে** আপনাকে স্বাগতম। 📚\n\n"
+        "⚠️ **সতর্কতা:** এটি ছাত্রশিবিরের কোনো অফিসিয়াল বট নয়। শুধুমাত্র সাধারণ ছাত্র-ছাত্রীদের পড়াশোনার সহযোগিতার জন্য এটি ব্যক্তিগতভাবে তৈরি করা হয়েছে।\n\n"
+        "🔍 **বই খুঁজবেন যেভাবে:**\n"
+        "বইয়ের নাম (আংশিক বা পুরো) লিখে মেসেজ দিন। বট আপনাকে স্বয়ংক্রিয়ভাবে পিডিএফ (PDF) ফাইলটি পাঠিয়ে দেবে।\n\n"
+        "💡 *উদাহরণ: 'চরিত্র গঠনের মৌলিক উপাদান' বা শুধু 'চরিত্র' লিখে সার্চ দিন।*"
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sheet = connect_sheet()
         
-        # বই আপলোড (শুধুমাত্র অ্যাডমিন)
+        # বই আপলোড (শুধুমাত্র আপনি পিডিএফ পাঠালে)
         if update.message.document and update.effective_user.id == ADMIN_ID:
             doc = update.message.document
             if doc.mime_type == 'application/pdf':
@@ -52,7 +61,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"✅ যুক্ত হয়েছে: {clean_name}")
                 return
 
-        # বই সার্চ লজিক (মাল্টিপল রেজাল্ট সাপোর্ট)
+        # বই সার্চ (সব খণ্ড সাপোর্টসহ)
         if update.message.text:
             query = update.message.text.lower().strip()
             all_books = sheet.get_all_records()
@@ -60,22 +69,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for row in all_books:
                 book_name_in_sheet = str(row['Book Name']).lower()
-                # ইউজারের সার্চ করা শব্দ যদি শিটের নামের ভেতর থাকে
                 if query in book_name_in_sheet:
                     found_books.append(row)
 
             if found_books:
-                await update.message.reply_text(f"🔍 মোট {len(found_books)}টি বই/খণ্ড পাওয়া গেছে। পাঠানো হচ্ছে...")
+                await update.message.reply_text(f"🔍 মোট {len(found_books)}টি রেজাল্ট পাওয়া গেছে। পাঠানো হচ্ছে...")
                 for book in found_books:
-                    # ফাইল আইডি দিয়ে এক এক করে পাঠানো
                     await context.bot.send_document(
                         chat_id=update.effective_chat.id, 
                         document=book['File ID'],
-                        caption=f"বইয়ের নাম: {book['Book Name']}"
+                        caption=f"📖 বই: {book['Book Name']}"
                     )
-                    time.sleep(1) # টেলিগ্রামের লিমিট এড়াতে বিরতি
+                    time.sleep(1) 
             else:
-                await update.message.reply_text("দুঃখিত, এই নামে কোনো বই বা খণ্ড পাওয়া যায়নি।")
+                await update.message.reply_text("❌ দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
                 
     except Exception as e:
         logging.error(f"Error: {e}")
@@ -89,4 +96,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-                         
+                
