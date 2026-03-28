@@ -12,7 +12,6 @@ from threading import Thread
 # ১. আপনার তথ্য
 TOKEN = '8762483955:AAFSG9blBOjRFbO2S5rDY2U3NxMX9y9oEgo'
 ADMIN_ID = 8596482199 
-ADMIN_USERNAME = "SagorIslam29"
 
 active_searches = 0
 
@@ -40,7 +39,7 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ৪. অটো ইউザー সেভ
+# ৪. অটো ইউজার সেভ
 def save_user(user_id):
     try:
         _, user_sheet = get_sheets()
@@ -53,49 +52,76 @@ def save_user(user_id):
 # ৫. স্টার্ট কমান্ড
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user.id)
-    keyboard = [[InlineKeyboardButton("👨‍💻 অ্যাডমিনের সাথে যোগাযোগ", url=f"https://t.me/{ADMIN_USERNAME}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    welcome_text = "✨ **আসসালামু আলাইকুম!** ✨\n\nআমাদের **অনলাইন লাইব্রেরি বটে** আপনাকে স্বাগত। 📚\n\n🔍 **বই খুঁজবেন যেভাবে:**\nবইয়ের নাম লিখে মেসেজ দিন।"
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    welcome_text = (
+        "✨ **আসসালামু আলাইকুম!** ✨\n\n"
+        "আমাদের **অনলাইন লাইব্রেরি বটে** আপনাকে স্বাগত। 📚\n\n"
+        "🔍 বইয়ের নাম লিখে মেসেজ দিন।\n"
+        "👨‍💻 সরাসরি অ্যাডমিনের সাথে কথা বলতে চাইলে `/admin` কমান্ডটি ব্যবহার করুন।"
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
-# ৬. ব্রডকাস্ট ফিচার (সব ইউজারকে মেসেজ পাঠানো)
+# ৬. ব্রডকাস্ট ফিচার
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ এই কমান্ডটি শুধু অ্যাডমিনের জন্য।")
+    if update.effective_user.id != ADMIN_ID: return
+    msg = " ".join(context.args)
+    if not msg:
+        await update.message.reply_text("⚠️ ব্যবহার: `/broadcast আপনার মেসেজ`")
         return
-
-    message_to_send = " ".join(context.args)
-    if not message_to_send:
-        await update.message.reply_text("⚠️ ব্যবহার: `/broadcast আপনার মেসেজটি লিখুন`")
-        return
-
     _, user_sheet = get_sheets()
-    user_ids = user_sheet.col_values(1)[1:] # প্রথম সারির টাইটেল বাদ দিয়ে সব আইডি
-    
-    success_count = 0
-    await update.message.reply_text(f"🚀 ব্রডকাস্ট শুরু হয়েছে... {len(user_ids)} জন ইউজারকে পাঠানো হচ্ছে।")
-
-    for user_id in user_ids:
+    user_ids = user_sheet.col_values(1)[1:]
+    await update.message.reply_text(f"🚀 ব্রডকাস্ট শুরু হয়েছে...")
+    for uid in user_ids:
         try:
-            await context.bot.send_message(chat_id=user_id, text=f"📢 **নোটিশ:**\n\n{message_to_send}", parse_mode='Markdown')
-            success_count += 1
-            await asyncio.sleep(0.1) # টেলিগ্রাম স্প্যাম ফিল্টার এড়াতে বিরতি
-        except Exception:
-            pass # ইউজার বট ব্লক করলে এরর এড়িয়ে যাবে
+            await context.bot.send_message(chat_id=uid, text=f"📢 **নোটিশ:**\n\n{msg}", parse_mode='Markdown')
+            await asyncio.sleep(0.1)
+        except: pass
+    await update.message.reply_text("✅ সম্পন্ন!")
 
-    await update.message.reply_text(f"✅ ব্রডকাস্ট সম্পন্ন! {success_count} জন ইউজার মেসেজ পেয়েছেন।")
+# ৭. হাইড এডমিন কন্টাক্ট সিস্টেম
+async def admin_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_msg = " ".join(context.args)
+    if not user_msg:
+        await update.message.reply_text("⚠️ **অ্যাডমিনকে মেসেজ দিতে এভাবে লিখুন:**\n`/admin আপনার কথাটি এখানে লিখুন`")
+        return
 
-# ৭. অ্যাডমিন ও হেল্প কমান্ড
-async def admin_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = f"👨‍💻 **অ্যাডমিন ইনফো:**\n\nবট ব্যবহারে সমস্যা হলে মেসেজ দিন:\n👉 @{ADMIN_USERNAME}"
-    keyboard = [[InlineKeyboardButton("📩 সরাসরি মেসেজ দিন", url=f"https://t.me/{ADMIN_USERNAME}")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    admin_alert = (
+        f"📩 **নতুন মেসেজ এসেছে!**\n\n"
+        f"👤 ইউজার: {update.effective_user.first_name}\n"
+        f"🆔 আইডি: `{update.effective_user.id}`\n"
+        f"💬 মেসেজ: {user_msg}\n\n"
+        f"📝 রিপ্লাই দিতে লিখুন: `/reply {update.effective_user.id} আপনার উত্তর`"
+    )
+    await context.bot.send_message(chat_id=ADMIN_ID, text=admin_alert, parse_mode='Markdown')
+    await update.message.reply_text("✅ আপনার মেসেজটি গোপনীয়ভাবে অ্যাডমিনের কাছে পাঠানো হয়েছে।")
 
+# ৮. অ্যাডমিন রিপ্লাই দেওয়ার সিস্টেম
+async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        target_id = context.args[0]
+        reply_msg = " ".join(context.args[1:])
+        await context.bot.send_message(chat_id=target_id, text=f"👨‍💻 **অ্যাডমিন থেকে উত্তর:**\n\n{reply_msg}", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ উত্তর পাঠানো হয়েছে।")
+    except:
+        await update.message.reply_text("⚠️ ব্যবহার: `/reply UserID আপনার উত্তর`")
+
+# ৯. হেল্প কমান্ড (নতুন ইনস্ট্রাকশনসহ)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = "📖 **বট ব্যবহারের নিয়ম:**\n১. বইয়ের নাম লিখে মেসেজ দিন।\n২. বানান সঠিক হলে বট পিডিএফ দেবে।\n৩. সমস্যার জন্য `/admin` ব্যবহার করুন।"
+    help_text = (
+        "📖 **বট ব্যবহারের নিয়মাবলী:**\n\n"
+        "১. **বই খোঁজা:** সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
+        "২. **অ্যাডমিনের সাথে যোগাযোগ:** আপনার পরিচয় গোপন রেখে সরাসরি অ্যাডমিনকে কিছু জানাতে চাইলে এভাবে লিখুন:\n"
+        "`/admin আপনার মেসেজ` (যেমন: `/admin ভাই এই বইটি দরকার`)\n\n"
+        "🛡️ **গোপনীয়তা:** অ্যাডমিন কমান্ড ব্যবহার করলে আপনার ব্যক্তিগত প্রোফাইল বা ইউজারনেম অ্যাডমিন দেখতে পাবেন না। শুধু আপনার মেসেজটি তার কাছে পৌঁছাবে।"
+    )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-# ৮. মেসেজ হ্যান্ডলার
+# ১০. পরিসংখ্যান ও মেসেজ হ্যান্ডলার
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        b_sheet, u_sheet = get_sheets()
+        await update.message.reply_text(f"📊 ইউজার: {len(u_sheet.col_values(1))-1}\n📚 বই: {len(b_sheet.col_values(1))-1}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_searches
     try:
@@ -107,39 +133,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found_books = [row for row in all_books if query in str(row['Book Name']).lower()]
 
             if found_books:
-                await update.message.reply_text(f"🔍 {len(found_books)}টি বই পাওয়া গেছে।")
                 for book in found_books:
                     await context.bot.send_document(chat_id=update.effective_chat.id, document=book['File ID'], caption=f"📖 {book['Book Name']}")
-                    await asyncio.sleep(1)
             else:
-                await update.message.reply_text("❌ দুঃখিত, কোনো বই পাওয়া যায়নি।")
+                await update.message.reply_text("❌ বই পাওয়া যায়নি।")
             active_searches -= 1
-
         elif update.message.document and update.effective_user.id == ADMIN_ID:
             book_sheet, _ = get_sheets()
             raw_name = update.message.document.file_name.replace(".pdf", "").replace("_", " ").strip()
             book_sheet.append_row([raw_name, update.message.document.file_id])
             await update.message.reply_text(f"✅ যুক্ত হয়েছে: {raw_name}")
-    except Exception as e:
+    except:
         if active_searches > 0: active_searches -= 1
-        logging.error(f"Error: {e}")
-
-# ৯. পরিসংখ্যান
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        book_sheet, user_sheet = get_sheets()
-        u_count = len(user_sheet.col_values(1)) - 1
-        b_count = len(book_sheet.col_values(1)) - 1
-        await update.message.reply_text(f"📊 **পরিসংখ্যান:**\n👤 ইউজার: {u_count}\n📚 বই: {b_count}\n🔥 লাইভ সার্চ: {active_searches}")
 
 def main():
     keep_alive()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("admin", admin_info))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("admin", admin_contact))
+    app.add_handler(CommandHandler("reply", admin_reply))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.Document.PDF | (filters.TEXT & ~filters.COMMAND), handle_message))
     app.run_polling()
 
