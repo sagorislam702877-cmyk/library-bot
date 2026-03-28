@@ -14,7 +14,6 @@ ADMIN_ID = 8596482199
 
 # ২. ওয়েব সার্ভার (Render সচল রাখতে)
 web_app = Flask('')
-
 @web_app.route('/')
 def home():
     return "Library Bot is Active!"
@@ -37,45 +36,46 @@ def connect_sheet():
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("আসসালামু আলাইকুম! বইয়ের নাম লিখে সার্চ দিন।")
+    await update.message.reply_text("আসসালামু আলাইকুম! বইয়ের নাম বা খণ্ড লিখে সার্চ দিন।\nশুধু বইয়ের নাম লিখলে সব খণ্ড পাবেন।")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sheet = connect_sheet()
         
-        # বই আপলোড এবং ফরওয়ার্ড হ্যান্ডলিং
+        # বই আপলোড (শুধুমাত্র অ্যাডমিন)
         if update.message.document and update.effective_user.id == ADMIN_ID:
             doc = update.message.document
             if doc.mime_type == 'application/pdf':
-                # শুধুমাত্র বইয়ের নাম পরিষ্কার করা হচ্ছে
                 raw_name = doc.file_name.replace(".pdf", "").replace(".PDF", "")
                 clean_name = raw_name.replace("_", " ").replace("-", " ").strip()
-                
-                # ফাইল আইডি বা লিঙ্কটি যেমন আছে তেমনই রাখা হচ্ছে (কোনো পরিবর্তন ছাড়া)
-                file_id = doc.file_id
-                
-                sheet.append_row([clean_name, file_id])
+                sheet.append_row([clean_name, doc.file_id])
                 await update.message.reply_text(f"✅ যুক্ত হয়েছে: {clean_name}")
-                time.sleep(1) 
                 return
 
-        # বই সার্চ
+        # বই সার্চ লজিক (মাল্টিপল রেজাল্ট সাপোর্ট)
         if update.message.text:
             query = update.message.text.lower().strip()
             all_books = sheet.get_all_records()
-            found = False
+            found_books = []
+
             for row in all_books:
-                book_in_sheet = str(row['Book Name']).lower()
-                if query in book_in_sheet:
-                    # ফাইল আইডিটি শিট থেকে হুবহু নেওয়া হচ্ছে
-                    actual_file_id = row['File ID']
-                    await update.message.reply_text(f"বই পাওয়া গেছে: {row['Book Name']}\nপাঠানো হচ্ছে...")
-                    await context.bot.send_document(chat_id=update.effective_chat.id, document=actual_file_id)
-                    found = True
-                    break
-            
-            if not found:
-                await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
+                book_name_in_sheet = str(row['Book Name']).lower()
+                # ইউজারের সার্চ করা শব্দ যদি শিটের নামের ভেতর থাকে
+                if query in book_name_in_sheet:
+                    found_books.append(row)
+
+            if found_books:
+                await update.message.reply_text(f"🔍 মোট {len(found_books)}টি বই/খণ্ড পাওয়া গেছে। পাঠানো হচ্ছে...")
+                for book in found_books:
+                    # ফাইল আইডি দিয়ে এক এক করে পাঠানো
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id, 
+                        document=book['File ID'],
+                        caption=f"বইয়ের নাম: {book['Book Name']}"
+                    )
+                    time.sleep(1) # টেলিগ্রামের লিমিট এড়াতে বিরতি
+            else:
+                await update.message.reply_text("দুঃখিত, এই নামে কোনো বই বা খণ্ড পাওয়া যায়নি।")
                 
     except Exception as e:
         logging.error(f"Error: {e}")
@@ -89,4 +89,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-                    
+                         
