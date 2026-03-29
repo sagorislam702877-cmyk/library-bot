@@ -16,7 +16,7 @@ SHEET_NAME = "MyBotDB"
 # ২. ওয়েব সার্ভার (রেন্ডার চালু রাখার জন্য)
 web_app = Flask('')
 @web_app.route('/')
-def home(): return "Bot is Online and Ready!"
+def home(): return "Bot is Online and Super Fast!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -41,6 +41,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     try:
+        # শুধু স্টার্ট করলেই ইউজার লিস্টে নাম উঠবে
         _, user_sheet = get_sheets()
         all_users = user_sheet.col_values(1)
         if user_id not in all_users:
@@ -66,7 +67,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         book_sheet, user_sheet = get_sheets()
         
-        # হেডার বাদ দিয়ে সঠিক সংখ্যা গণনা
         all_users = user_sheet.col_values(1)
         total_users = len(all_users) - 1 if "User ID" in all_users else len(all_users)
         
@@ -79,7 +79,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"মোট বইয়ের সংখ্যা: {max(0, total_books)} টি"
         )
         await update.message.reply_text(status_msg)
-    except Exception as e:
+    except:
         await update.message.reply_text("তথ্য সংগ্রহ করতে সমস্যা হচ্ছে।")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,7 +91,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     _, user_sheet = get_sheets()
     users = user_sheet.col_values(1)
-    users = [u for u in users if u != "User ID"] # হেডার বাদ দেওয়া হলো
+    users = [u for u in users if u != "User ID"]
     
     count = 0
     await update.message.reply_text("ব্রডকাস্ট শুরু হয়েছে...")
@@ -121,45 +121,43 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("উত্তর পাঠানো হয়েছে।")
     except: await update.message.reply_text("বার্তাটি পাঠানো যায়নি।")
 
-# ৬. সরাসরি সার্চ ও ফাইল সেন্ডিং 
+# ৬. ফাস্ট সার্চ ও ফাইল সেন্ডিং 
 async def search_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text.strip().lower()
+    user_query = update.message.text.strip()
     if not user_query: return
     
     try:
-        book_sheet, user_sheet = get_sheets()
+        book_sheet, _ = get_sheets() # সার্চে শুধু বইয়ের ডাটাবেজ ডাকবে
         
-        # কেউ মেসেজ দিলে অটোমেটিক শিটে সেভ হবে
-        user_id = str(update.effective_user.id)
-        all_users = user_sheet.col_values(1)
-        if user_id not in all_users:
-            user_sheet.append_row([user_id])
-
         all_rows = book_sheet.get_all_values()
         if len(all_rows) < 2: return
         
         books = all_rows[1:] 
         matches = []
 
-        # নামের অংশ মিললেই বই ধরবে
+        # স্পেস সরিয়ে সার্চ লজিক (যেন 'কর্মপদ্ধতি' আর 'কর্ম পদ্ধতি' দুটোই কাজ করে)
+        clean_query = user_query.replace(" ", "").lower()
+
         for row in books:
-            if user_query in row[0].lower():
+            db_book_name = row[0].replace(" ", "").lower()
+            if clean_query in db_book_name:
                 matches.append((row[0], row[1]))
 
         if not matches:
-            await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
+            await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি। বানানটি একটু চেক করে দেখুন।")
             return
 
         if len(matches) > 1:
-            await update.message.reply_text(f"আপনার খোঁজা নামের সাথে মিল থাকা {len(matches)}টি বই পাওয়া গেছে। সবকটি পাঠানো হচ্ছে...")
+            await update.message.reply_text(f"আপনার খোঁজা নামের সাথে মিল থাকা {len(matches)}টি বই পাওয়া গেছে। পাঠানো হচ্ছে...")
         
-        for name, fid in matches[:10]: # একবারে সর্বোচ্চ ১০টি
+        for name, fid in matches[:10]: # একবারে সর্বোচ্চ ১০টি লিমিট
             try:
                 await context.bot.send_document(chat_id=update.effective_chat.id, document=fid, caption=f"বই: {name}")
                 await asyncio.sleep(0.5) 
             except: continue
 
     except Exception as e:
+        await update.message.reply_text("সার্ভার এই মুহূর্তে একটু ব্যস্ত আছে। দয়া করে ১০ সেকেন্ড পর আবার বইয়ের নামটি লিখুন।")
         logging.error(f"Search error: {e}")
 
 # ৭. মেইন রানার 
@@ -178,4 +176,4 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
-                  
+    
