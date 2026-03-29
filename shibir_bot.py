@@ -62,17 +62,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ৪. সুপার সার্চ ইঞ্জিন
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.strip().lower()
-    book_sheet, _ = get_sheets()
+    book_sheet, user_sheet = get_sheets()
 
     if not book_sheet:
         await update.message.reply_text("❌ Database error")
         return
 
     try:
+        # ইউজার সেভ করা
+        if user_sheet:
+            user_ids = user_sheet.col_values(1)
+            if str(update.effective_user.id) not in user_ids:
+                user_sheet.append_row([str(update.effective_user.id)])
+
         all_data = book_sheet.get_all_values()[1:]
         book_names = [row[0] for row in all_data]
 
-        # ধাপ ১: Direct match
+        # Direct match
         found_books = []
         for row in all_data:
             if user_text in row[0].lower():
@@ -87,7 +93,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # ধাপ ২: Fuzzy match
+        # Fuzzy match
         matches = get_close_matches(user_text, book_names, n=5, cutoff=0.5)
 
         if matches:
@@ -100,16 +106,16 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             return
 
-        # ধাপ ৩: AI correction
+        # AI correction
         prompt = f"""
 User wrote: {user_text}
 
 Convert to correct Bengali book name.
 
 Rules:
-- Only book name
-- No explanation
-- No extra text
+Only book name
+No explanation
+No extra text
 """
 
         response = ai_model.generate_content(prompt)
@@ -120,7 +126,6 @@ Rules:
 
         ai_res = response.text.strip().replace("*", "").replace("\n", "")
 
-        # ধাপ ৪: AI + Fuzzy
         matches = get_close_matches(ai_res, book_names, n=5, cutoff=0.5)
 
         if matches:
@@ -172,7 +177,7 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or len(context.args) < 2:
         return
 
-    target_id = context.args[0]
+    target_id = int(context.args[0])
     reply_msg = " ".join(context.args[1:])
 
     await context.bot.send_message(
@@ -182,6 +187,40 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("পাঠানো হয়েছে।")
 
+# ================= BROADCAST (NEW) =================
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    message = " ".join(context.args)
+
+    if not message:
+        await update.message.reply_text("Usage: /broadcast আপনার মেসেজ")
+        return
+
+    _, user_sheet = get_sheets()
+
+    if not user_sheet:
+        await update.message.reply_text("❌ User DB error")
+        return
+
+    users = user_sheet.col_values(1)[1:]
+
+    success = 0
+
+    for user_id in users:
+        try:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=f"📢 Broadcast:\n\n{message}"
+            )
+            success += 1
+        except:
+            pass
+
+    await update.message.reply_text(f"✅ মোট {success} জন ইউজারকে মেসেজ পাঠানো হয়েছে")
+
+# ================= UPLOAD =================
 async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -206,6 +245,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("admin", contact_admin))
     app.add_handler(CommandHandler("reply", reply_to_user))
+    app.add_handler(CommandHandler("broadcast", broadcast))  # ✅ added
 
     app.add_handler(MessageHandler(filters.Document.ALL, upload_book))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
