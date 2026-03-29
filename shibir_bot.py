@@ -633,4 +633,22 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
 
     app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(Com
+    app.add_handler(CommandHandler("Admin", admin_command))
+
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("Broadcast", broadcast_command))
+
+    app.add_handler(CommandHandler("upload", upload_command))
+    app.add_handler(CommandHandler("Upload", upload_command))
+
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("Stats", stats))
+
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_admin_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
