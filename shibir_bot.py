@@ -9,7 +9,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from flask import Flask
 from threading import Thread
 
-# ১. কনফিগারেশন
+# ================= CONFIG =================
+
 TOKEN = '8762483955:AAF9GLhTVaIZWfP0ybduNVBFVVJ5-HWHe3Y'
 ADMIN_ID = 8596482199
 SHEET_NAME = "MyBotDB"
@@ -18,7 +19,9 @@ GEMINI_API_KEY = "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM"
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
-web_app = Flask('')
+# ================= FLASK =================
+
+web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
@@ -28,10 +31,14 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host='0.0.0.0', port=port)
 
-# ২. শিট কানেকশন
+# ================= SHEETS =================
+
 def get_sheets():
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
         client = gspread.authorize(creds)
         spreadsheet = client.open(SHEET_NAME)
@@ -42,7 +49,8 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ================= GEMINI SPELL CORRECTION =================
+# ================= GEMINI =================
+
 async def correct_book_name(user_text):
     prompt = f"""
 User wrote a book name with spelling mistakes.
@@ -59,38 +67,40 @@ Rules:
 Input:
 {user_text}
 """
+
     try:
         response = ai_model.generate_content(prompt)
 
-        if not response.text:
+        if not response or not response.text:
             return None
 
         corrected = response.text.strip().replace("*", "").replace("\n", "").lower()
-        return corrected
+        return corrected if corrected else None
 
     except Exception as e:
         logging.error(f"Gemini error: {e}")
         return None
 
-# ৩. ইউজার কমান্ডস
+# ================= COMMANDS =================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    start_text = (
+    await update.message.reply_text(
         "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নামটি লিখুন।\n"
         "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সটি লিখুন"
     )
-    await update.message.reply_text(start_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
+    await update.message.reply_text(
         "বট ব্যবহারের নিয়মাবলী:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: নতুন বই বা সমস্যার জন্য /admin লিখে আপনার কথাটি লিখুন।\n"
     )
-    await update.message.reply_text(help_text)
 
-# ৪. সুপার সার্চ ইঞ্জিন
+# ================= SEARCH =================
+
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.strip().lower()
+
     book_sheet, user_sheet = get_sheets()
 
     if not book_sheet:
@@ -98,7 +108,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # ইউজার সেভ করা
+        # Save user
         if user_sheet:
             user_ids = user_sheet.col_values(1)
             if str(update.effective_user.id) not in user_ids:
@@ -135,7 +145,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             return
 
-        # ================= GEMINI CORRECTION =================
+        # Gemini correction
         ai_res = await correct_book_name(user_text)
 
         if not ai_res:
@@ -162,7 +172,8 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Search error: {e}")
         await update.message.reply_text("⚠️ Error occurred")
 
-# ৫. এডমিন ফিচারস
+# ================= ADMIN =================
+
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -206,6 +217,7 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("পাঠানো হয়েছে।")
 
 # ================= BROADCAST =================
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -239,6 +251,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ মোট {success} জন ইউজারকে মেসেজ পাঠানো হয়েছে")
 
 # ================= UPLOAD =================
+
 async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -252,7 +265,8 @@ async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
         book_sheet.append_row([name, doc.file_id])
         await update.message.reply_text(f"সেভ হয়েছে: {name}")
 
-# MAIN
+# ================= MAIN =================
+
 def main():
     Thread(target=run_web).start()
 
@@ -270,5 +284,5 @@ def main():
 
     app.run_polling(drop_pending_updates=True)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
