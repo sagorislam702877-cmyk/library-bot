@@ -3,21 +3,22 @@ import gspread
 import os
 import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 from threading import Thread
 from fuzzywuzzy import process 
 
-# --- কনফিগারেশন ---
-TOKEN = '8762483955:AAFai0evS1PBKMK1X6dVVa-dCzIc3oZEMCo' 
+# ১. কনফিগারেশন 
+TOKEN = '8762483955:AAHUigW64ikrWN39Ok5l4eGPvtRVewX-zMg' 
 ADMIN_ID = 8596482199 
 SHEET_NAME = "MyBotDB" 
 
-# --- ওয়েব সার্ভার ---
+# ২. ওয়েব সার্ভার (রেন্ডার চালু রাখার জন্য)
 web_app = Flask('')
 @web_app.route('/')
-def home(): return "Library Bot is Online!"
+def home(): 
+    return "Bot is Online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -28,7 +29,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# --- গুগল শিট কানেক্ট ---
+# ৩. গুগল শিট কানেকশন 
 def get_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
@@ -38,7 +39,7 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- ১. স্টার্ট ও বিস্তারিত হেল্প কমান্ড ---
+# ৪. কমান্ড ফাংশন (Start, Help)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
@@ -49,24 +50,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     
     await update.message.reply_text(
-        "আসসালামু আলাইকুম।\nঅনলাইন লাইব্রেরিতে আপনাকে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নাম লিখে আমাদের মেসেজ দিন।\n\n"
-        "বট ব্যবহারের বিস্তারিত নিয়ম জানতে /help কমান্ডটি ব্যবহার করুন।"
+        "আসসালামু আলাইকুম।\nঅনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইটির নাম লিখে মেসেজ দিন।\n\nবট ব্যবহারের নিয়ম জানতে /help লিখুন।"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # এখানে শুধু ইউজারের জন্য প্রয়োজনীয় তথ্য রাখা হয়েছে
     help_text = (
-        "📖 অনলাইন লাইব্রেরি বট ব্যবহারের পূর্ণাঙ্গ নির্দেশিকা:\n\n"
-        "১. বই অনুসন্ধান:\n"
-        "সরাসরি বইয়ের নাম লিখে মেসেজ দিন। যেমন: 'সংবিধান'। বইয়ের নামের অংশবিশেষ লিখলেও বট আপনাকে বই খুঁজে দেবে।\n\n"
-        "২. একক বা তালিকাভুক্ত সব বই সংগ্রহ:\n"
-        "সার্চ রেজাল্টে যদি একাধিক বইয়ের সাজেশন আসে, তবে আপনি নির্দিষ্ট কোনো বইয়ের নামের ওপর ক্লিক করে শুধুমাত্র সেই বইটি নিতে পারেন। আবার '📥 সাজেস্ট করা সব বই একসাথে নিন' বাটনে ক্লিক করে তালিকার সব বই এক ক্লিকেই সংগ্রহ করতে পারেন।\n\n"
-        "৩. কর্তৃপক্ষকে বার্তা পাঠানো:\n"
-        "কোনো নতুন বইয়ের অনুরোধ বা অভিযোগ জানাতে মেসেজের শুরুতে /admin লিখে আপনার কথাটি লিখুন।\n"
+        "বট ব্যবহারের গাইডলাইন:\n\n"
+        "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন। নাম মিলে গেলে বট সরাসরি পিডিএফ ফাইল পাঠিয়ে দেবে।\n"
+        "২. অ্যাডমিনের সাথে যোগাযোগ: নতুন বইয়ের অনুরোধে /admin লিখে আপনার কথাটি লিখুন।\n"
         "উদাহরণ: /admin ভাই, আমার অমুক বইটি প্রয়োজন।"
     )
     await update.message.reply_text(help_text)
 
-# --- ২. অ্যাডমিন যোগাযোগ ---
+# ৫. অ্যাডমিন ফিচার (Stats, Broadcast, Reply) - এগুলো গোপন থাকবে
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        _, user_sheet = get_sheets()
+        users = user_sheet.col_values(1)
+        total_users = len(users)
+        await update.message.reply_text(f"বর্তমানে বটের মোট ইউজার সংখ্যা: {total_users} জন")
+    except:
+        await update.message.reply_text("ইউজার সংখ্যা বের করতে সমস্যা হচ্ছে।")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    msg = " ".join(context.args)
+    if not msg:
+        await update.message.reply_text("মেসেজ দিতে /broadcast এর পর আপনার কথাটি লিখুন।")
+        return
+    
+    _, user_sheet = get_sheets()
+    users = user_sheet.col_values(1)
+    count = 0
+    await update.message.reply_text("ব্রডকাস্ট শুরু হয়েছে...")
+    for user_id in users:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=f"অ্যাডমিন থেকে নোটিশ:\n\n{msg}")
+            count += 1
+            await asyncio.sleep(0.05)
+        except: continue
+    await update.message.reply_text(f"সফলভাবে {count} জন ইউজারকে মেসেজ পাঠানো হয়েছে।")
+
 async def contact_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_msg = " ".join(context.args)
@@ -74,105 +100,70 @@ async def contact_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("মেসেজ পাঠাতে /admin এর পর আপনার কথাটি লিখুন।")
         return
     await context.bot.send_message(chat_id=ADMIN_ID, text=f"ইউজার মেসেজ (ID: {user_id}):\n{user_msg}")
-    await update.message.reply_text("আপনার মেসেজটি কর্তৃপক্ষের কাছে পাঠানো হয়েছে।")
+    await update.message.reply_text("আপনার মেসেজটি অ্যাডমিনের কাছে পাঠানো হয়েছে।")
 
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or len(context.args) < 2: return
     target_id, msg = context.args[0], " ".join(context.args[1:])
     try:
-        await context.bot.send_message(chat_id=target_id, text=f"কর্তৃপক্ষের উত্তর:\n\n{msg}")
+        await context.bot.send_message(chat_id=target_id, text=f"অ্যাডমিনের উত্তর:\n\n{msg}")
         await update.message.reply_text("উত্তর পাঠানো হয়েছে।")
     except: await update.message.reply_text("বার্তাটি পাঠানো যায়নি।")
 
-# --- ৩. উন্নত সার্চ লজিক (সাজেশনসহ) ---
+# ৬. ডাইরেক্ট সার্চ লজিক 
 async def search_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text.strip()
+    user_query = update.message.text.strip().lower()
     if not user_query: return
     
-    book_sheet, _ = get_sheets()
-    all_rows = book_sheet.get_all_values()
-    if len(all_rows) < 2: return
-    
-    books = all_rows[1:]
-    matches = []
-
-    # কি-ওয়ার্ড ও অংশবিশেষ সার্চ
-    for row in books:
-        if user_query.lower() in row[0].lower():
-            matches.append((row[0], row[1]))
-
-    # ফাজি সার্চ (বানান ভুল হলে)
-    if not matches:
-        all_names = [row[0] for row in books]
-        fuzzy_results = process.extract(user_query, all_names, limit=8)
-        for name, score in fuzzy_results:
-            if score > 45:
-                fid = next((r[1] for r in books if r[0] == name), None)
-                if fid: matches.append((name, fid))
-
-    if not matches:
-        await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি। সঠিক নাম লিখে পুনরায় চেষ্টা করুন।")
-        return
-
-    # রেজাল্ট প্রদর্শন
-    if len(matches) == 1:
-        await context.bot.send_document(chat_id=update.effective_chat.id, document=matches[0][1], caption=f"বই: {matches[0][0]}")
-    else:
-        # ইউনিক কি ব্যবহার করে সাজেশন লিস্ট সেভ রাখা
-        search_id = str(hash(user_query + str(update.effective_user.id)))[-8:]
-        context.user_data[f"list_{search_id}"] = matches[:10] 
+    try:
+        book_sheet, _ = get_sheets()
+        all_rows = book_sheet.get_all_values()
+        if len(all_rows) < 2: return
         
-        buttons = []
-        # 'সাজেস্ট করা সব বই' বাটন
-        buttons.append([InlineKeyboardButton("📥 সাজেস্ট করা সব বই একসাথে নিন", callback_data=f"all_{search_id}")])
-        
-        # একক বইয়ের বাটন
-        for name, fid in matches[:10]:
-            buttons.append([InlineKeyboardButton(f"📖 {name}", callback_data=f"one_{fid}")])
-        
-        await update.message.reply_text(
-            f"আপনার অনুসন্ধানের ভিত্তিতে নিচের {len(matches[:10])}টি বই সাজেস্ট করা হলো। আপনি চাইলে নির্দিষ্ট একটি বই নিতে পারেন অথবা সবগুলো একসাথে সংগ্রহ করতে পারেন:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        books = all_rows[1:] 
+        matches = []
 
-# --- ৪. বাটন হ্যান্ডলার ---
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # নির্দিষ্ট একটি বই পাঠানো
-    if query.data.startswith('one_'):
-        file_id = query.data.replace("one_", "")
-        try:
-            await context.bot.send_document(chat_id=update.effective_chat.id, document=file_id)
-        except:
-            await query.message.reply_text("দুঃখিত, ফাইলটি পাঠানো সম্ভব হচ্ছে না।")
+        for row in books:
+            if user_query in row[0].lower():
+                matches.append((row[0], row[1]))
 
-    # সাজেস্ট করা সব বই পাঠানো
-    elif query.data.startswith('all_'):
-        search_id = query.data.replace("all_", "")
-        suggested_books = context.user_data.get(f"list_{search_id}")
+        if not matches:
+            all_names = [row[0] for row in books]
+            fuzzy_results = process.extract(user_query, all_names, limit=5)
+            for name, score in fuzzy_results:
+                if score > 50:
+                    fid = next((r[1] for r in books if r[0] == name), None)
+                    if fid: matches.append((name, fid))
+
+        if not matches:
+            await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
+            return
+
+        if len(matches) > 1:
+            await update.message.reply_text(f"আপনার খোঁজা নামের সাথে মিল থাকা {len(matches)}টি বই পাওয়া গেছে। সবকটি পাঠানো হচ্ছে...")
         
-        if suggested_books:
-            await query.edit_message_text(f"সাজেস্ট করা {len(suggested_books)}টি ফাইল পাঠানো হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-            for name, fid in suggested_books:
-                try:
-                    await context.bot.send_document(chat_id=update.effective_chat.id, document=fid, caption=f"বই: {name}")
-                    await asyncio.sleep(0.6) # টেলিগ্রাম সার্ভারের রেট লিমিট এড়াতে বিরতি
-                except: continue
-        else:
-            await query.edit_message_text("সেশনের মেয়াদ শেষ হয়েছে। অনুগ্রহ করে আবার সার্চ করুন।")
+        for name, fid in matches:
+            try:
+                await context.bot.send_document(chat_id=update.effective_chat.id, document=fid, caption=f"বই: {name}")
+                await asyncio.sleep(0.6) 
+            except: continue
 
-# --- ৫. মেইন রানার ---
+    except Exception as e:
+        logging.error(f"Error: {e}")
+
+# ৭. মেইন রানার 
 def main():
     keep_alive()
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("admin", contact_admin))
     app.add_handler(CommandHandler("reply", reply_to_user))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_book))
+    
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
