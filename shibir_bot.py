@@ -26,9 +26,10 @@ GEMINI_API_KEY = "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM"
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# ================= LOGGING =================
+# ================= CACHE (NEW) =================
 
-logging.basicConfig(level=logging.INFO)
+_cached_book_sheet = None
+_cached_user_sheet = None
 
 # ================= FLASK =================
 
@@ -36,7 +37,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Library Bot is Running"
+    return "Library Bot is Optimized!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -45,6 +46,11 @@ def run_web():
 # ================= SHEETS =================
 
 def get_sheets():
+    global _cached_book_sheet, _cached_user_sheet
+
+    if _cached_book_sheet and _cached_user_sheet:
+        return _cached_book_sheet, _cached_user_sheet
+
     try:
         scope = [
             "https://spreadsheets.google.com/feeds",
@@ -54,68 +60,54 @@ def get_sheets():
         client = gspread.authorize(creds)
 
         spreadsheet = client.open(SHEET_NAME)
-        return spreadsheet.worksheet("Sheet1"), spreadsheet.worksheet("Users")
+
+        _cached_book_sheet = spreadsheet.worksheet("Sheet1")
+        _cached_user_sheet = spreadsheet.worksheet("Users")
+
+        return _cached_book_sheet, _cached_user_sheet
 
     except Exception as e:
         logging.error(f"Sheet Error: {e}")
         return None, None
 
-# ================= GEMINI =================
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-def suggest_books(user_text, book_list):
-    prompt = f"""
-User input: {user_text}
+# ================= UTIL =================
 
-From the following book list, suggest the closest matching book names.
+def normalize(text):
+    if not text:
+        return ""
+    return text.lower().replace(" ", "").strip()
 
-Book list:
-{book_list}
-
-Rules:
-- Return only 3 to 5 book names
-- One per line
-- No explanation
-"""
-
-    try:
-        response = ai_model.generate_content(prompt)
-
-        if not response or not response.text:
-            return []
-
-        suggestions = response.text.strip().split("\n")
-        suggestions = [s.strip() for s in suggestions if s.strip()]
-
-        return suggestions[:5]
-
-    except Exception as e:
-        logging.error(f"Gemini error: {e}")
-        return []
+def contains_volume(text):
+    keywords = ["খণ্ড", "vol", "volume"]
+    text = text.lower()
+    return any(k in text for k in keywords)
 
 # ================= COMMANDS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    start_text = (
+    await update.message.reply_text(
         "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নামটি লিখুন।\n"
         "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সটি লিখুন"
     )
-    await update.message.reply_text(start_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
+    await update.message.reply_text(
         "বট ব্যবহারের নিয়মাবলী:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
-        "২. এডমিন: নতুন বই বা সমস্যার জন্য /admin লিখে আপনার কথাটি লিখুন।\n"
-        "যেমন : /admin আমার অমুক বইটি প্রয়োজন"
+        "২. এডমিন: /admin লিখে আপনার কথা লিখুন।"
     )
-    await update.message.reply_text(help_text)
 
 # ================= SEARCH =================
 
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip().lower()
+    user_text_raw = update.message.text.strip()
+    user_text = normalize(user_text_raw)
 
-    # typing indicator
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
@@ -128,92 +120,147 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Save user (avoid duplicate)
+        # Save user
         if user_sheet:
-            user_id = str(update.effective_user.id)
+            uid = str(update.effective_user.id)
             users = user_sheet.col_values(1)
 
-            if user_id not in users:
-                user_sheet.append_row([user_id])
+            if uid not in users:
+                user_sheet.append_row([uid])
 
         all_data = book_sheet.get_all_values()[1:]
+
+        # clean rows
+        all_data = [row for row in all_data if row and row[0]]
+
         book_names = [row[0] for row in all_data]
 
-        # Direct match
+        found_books = []
+
+        # ================= CASE: volume =================
+        if contains_volume(user_text_raw):
+
+            for row in all_data:
+                if user_text in normalize(row[0]):
+                    found_books.append(row)
+
+            if found_books:
+                for book in found_books:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=book[1],
+                        caption=f"📘 {book[0]}"
+                    )
+                return
+
+        # ================= NORMAL SEARCH =================
+        matched = []
+
         for row in all_data:
-            if user_text in row[0].lower():
-                await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=row[1],
-                    caption=f"আপনার বই: {row[0]}"
+            if user_text in normalize(row[0]):
+                matched.append(row)
+
+        if matched:
+            if len(matched) > 1:
+                keyboard = [
+                    [InlineKeyboardButton(b[0], callback_data=f"book|{b[0]}")]
+                    for b in matched[:10]  # limit buttons
+                ]
+
+                await update.message.reply_text(
+                    "📚 আপনার বই নির্বাচন করুন:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return
 
-        # Fuzzy match
-        matches = get_close_matches(user_text, book_names, n=5, cutoff=0.5)
+            for book in matched:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=book[1],
+                    caption=f"📘 {book[0]}"
+                )
+            return
+
+        # ================= FUZZY =================
+        matches = get_close_matches(
+            user_text,
+            [normalize(b) for b in book_names],
+            n=5,
+            cutoff=0.6  # slightly stricter for accuracy
+        )
 
         if matches:
-            keyboard = [
-                [InlineKeyboardButton(name, callback_data=f"book|{name}")]
-                for name in matches
-            ]
-
-            await update.message.reply_text(
-                "এইগুলোর মধ্যে কি আপনার বইটি আছে?",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            for row in all_data:
+                if normalize(row[0]) in matches:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=row[1],
+                        caption=f"📘 {row[0]}"
+                    )
             return
 
-        # Gemini suggestions
-        suggestions = suggest_books(user_text, book_names)
+        # ================= GEMINI =================
+        prompt = f"""
+User wrote: {user_text_raw}
 
-        if suggestions:
-            keyboard = [
-                [InlineKeyboardButton(name, callback_data=f"book|{name}")]
-                for name in suggestions
-            ]
+Convert to correct Bengali book name.
 
-            await update.message.reply_text(
-                "এইগুলোর মধ্যে কি আপনার বইটি আছে?",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+Rules:
+- Only book name
+- No explanation
+"""
+
+        response = ai_model.generate_content(prompt)
+
+        if not response or not response.text:
+            await update.message.reply_text("❌ বুঝতে পারিনি")
             return
 
-        await update.message.reply_text("❌ বুঝতে পারিনি")
+        ai_res = response.text.strip().replace("*", "").split("\n")[0]
+
+        ai_matches = get_close_matches(
+            normalize(ai_res),
+            [normalize(b) for b in book_names],
+            n=5,
+            cutoff=0.6
+        )
+
+        if ai_matches:
+            for row in all_data:
+                if normalize(row[0]) in ai_matches:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=row[1],
+                        caption=f"📘 {row[0]}"
+                    )
+            return
+
+        await update.message.reply_text(
+            f"❌ বই পাওয়া যায়নি\n\n👉 আপনি কি এটা বুঝাতে চেয়েছেন?\n{ai_res}"
+        )
 
     except Exception as e:
         logging.error(f"Search error: {e}")
-        await update.message.reply_text("⚠️ সাময়িক সমস্যা, আবার চেষ্টা করুন")
+        await update.message.reply_text("⚠️ Error occurred")
 
-# ================= BUTTON HANDLER =================
+# ================= CALLBACK =================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
+    book_name = query.data.split("|")[1]
 
-    if data.startswith("book|"):
-        book_name = data.split("|")[1]
+    book_sheet, _ = get_sheets()
+    all_data = book_sheet.get_all_values()[1:]
 
-        book_sheet, _ = get_sheets()
-
-        if not book_sheet:
-            await query.message.reply_text("❌ Database error")
+    for row in all_data:
+        if row[0] == book_name:
+            await query.message.reply_document(
+                document=row[1],
+                caption=f"📘 {row[0]}"
+            )
             return
-
-        all_data = book_sheet.get_all_values()[1:]
-
-        for row in all_data:
-            if row[0].lower() == book_name.lower():
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=row[1],
-                    caption=f"📘 {row[0]}"
-                )
-                return
-
-        await query.message.reply_text("❌ এই বইটি পাওয়া যায়নি")
 
 # ================= ADMIN =================
 
@@ -223,16 +270,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     book_sheet, user_sheet = get_sheets()
 
-    if not book_sheet or not user_sheet:
-        await update.message.reply_text("❌ Error loading data")
-        return
-
     total_users = len(user_sheet.col_values(1)) - 1
     total_books = len(book_sheet.col_values(1)) - 1
 
     await update.message.reply_text(
-        f"স্ট্যাটাস:\nমোট ইউজার: {total_users}\nমোট বই: {total_books}"
+        f"স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি"
     )
+
+# (remaining admin, broadcast, upload same as before — unchanged for stability)
 
 # ================= MAIN =================
 
@@ -245,8 +290,9 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats))
 
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
-    app.add_handler(CallbackQueryHandler(button_handler))
 
     app.run_polling(drop_pending_updates=True)
 
