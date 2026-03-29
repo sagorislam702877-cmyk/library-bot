@@ -42,6 +42,36 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# ================= GEMINI SPELL CORRECTION =================
+async def correct_book_name(user_text):
+    prompt = f"""
+User wrote a book name with spelling mistakes.
+
+Task:
+Correct it to the most accurate Bengali book name.
+
+Rules:
+- Only return the corrected book name
+- No explanation
+- No extra words
+- No punctuation
+
+Input:
+{user_text}
+"""
+    try:
+        response = ai_model.generate_content(prompt)
+
+        if not response.text:
+            return None
+
+        corrected = response.text.strip().replace("*", "").replace("\n", "").lower()
+        return corrected
+
+    except Exception as e:
+        logging.error(f"Gemini error: {e}")
+        return None
+
 # ৩. ইউজার কমান্ডস
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_text = (
@@ -55,7 +85,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "বট ব্যবহারের নিয়মাবলী:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: নতুন বই বা সমস্যার জন্য /admin লিখে আপনার কথাটি লিখুন।\n"
-        "যেমন : /admin আমার অমুক বইটি প্রয়োজন"
     )
     await update.message.reply_text(help_text)
 
@@ -106,25 +135,12 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             return
 
-        # AI correction
-        prompt = f"""
-User wrote: {user_text}
+        # ================= GEMINI CORRECTION =================
+        ai_res = await correct_book_name(user_text)
 
-Convert to correct Bengali book name.
-
-Rules:
-Only book name
-No explanation
-No extra text
-"""
-
-        response = ai_model.generate_content(prompt)
-
-        if not response.text:
+        if not ai_res:
             await update.message.reply_text("❌ বুঝতে পারিনি")
             return
-
-        ai_res = response.text.strip().replace("*", "").replace("\n", "")
 
         matches = get_close_matches(ai_res, book_names, n=5, cutoff=0.5)
 
@@ -138,7 +154,9 @@ No extra text
                     )
             return
 
-        await update.message.reply_text(f"❌ বই পাওয়া যায়নি\n\n👉 আপনি কি এটা বুঝাতে চেয়েছেন?\n{ai_res}")
+        await update.message.reply_text(
+            f"❌ বই পাওয়া যায়নি\n\n👉 আপনি কি এটা বুঝাতে চেয়েছেন?\n{ai_res}"
+        )
 
     except Exception as e:
         logging.error(f"Search error: {e}")
@@ -187,7 +205,7 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("পাঠানো হয়েছে।")
 
-# ================= BROADCAST (NEW) =================
+# ================= BROADCAST =================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -245,7 +263,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("admin", contact_admin))
     app.add_handler(CommandHandler("reply", reply_to_user))
-    app.add_handler(CommandHandler("broadcast", broadcast))  # ✅ added
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
     app.add_handler(MessageHandler(filters.Document.ALL, upload_book))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
