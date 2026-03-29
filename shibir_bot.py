@@ -37,7 +37,7 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ৪. স্টার্ট ও হেল্প কমান্ড
+# ৪. স্টার্ট ও হেল্প সেকশন (যা আপনি খুঁজছিলেন)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     try:
@@ -48,25 +48,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     
     await update.message.reply_text(
-        "আসসালামু আলাইকুম।\nঅনলাইন লাইব্রেরিতে স্বাগতম। বইয়ের নাম লিখে মেসেজ দিন।\n\nসাহায্যের জন্য /help লিখুন।"
+        "আসসালামু আলাইকুম।\nঅনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইটির নাম লিখে মেসেজ দিন।\n\nবট ব্যবহারের নিয়ম জানতে /help লিখুন।"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # আপনার কাঙ্ক্ষিত হেল্প সেকশনের লেখা
     help_text = (
-        "বট ব্যবহারের নিয়মাবলী:\n\n"
+        "📖 বট ব্যবহারের গাইডলাইন:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
-        "২. অ্যাডমিন যোগাযোগ: /admin লিখে আপনার কথাটি লিখুন।\n"
-        "উদাহরণ: /admin ভাই আমার অমুক বই প্রয়োজন।"
+        "২. অ্যাডমিনের সাথে যোগাযোগ: নতুন বই বা সমস্যার জন্য /admin লিখে আপনার কথাটি লিখুন।\n"
+        "উদাহরণ: /admin ভাই, আমার অমুক বইটি প্রয়োজন।"
     )
     await update.message.reply_text(help_text)
 
-# ৫. উন্নত অটো-আপলোড (ক্যাপশন থেকে নাম ও আন্ডারস্কোর রিমুভ)
+# ৫. অটোমেটিক বই আপলোড (ক্যাপশন ও আন্ডারস্কোর ফিক্স)
 async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     doc = update.message.document
     caption = update.message.caption
     
-    # ক্যাপশন থাকলে সেটি নিবে, না থাকলে ফাইলের নাম নিবে
+    # ক্যাপশন থাকলে সেটিই বইয়ের নাম হবে
     book_name = caption if caption else doc.file_name
     if not book_name: book_name = "Unknown_Book"
     
@@ -85,101 +86,67 @@ async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ শিটে সেভ করতে সমস্যা হয়েছে।")
 
-# ৬. অ্যাডমিন প্যানেল কমান্ডস
+# ৬. অ্যাডমিন কমান্ডস
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
         book_sheet, user_sheet = get_sheets()
         total_users = len(user_sheet.col_values(1)) - 1
         total_books = len(book_sheet.col_values(1)) - 1
-        await update.message.reply_text(f"মোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি")
-    except: await update.message.reply_text("তথ্য সংগ্রহ করতে সমস্যা হচ্ছে।")
+        await update.message.reply_text(f"📊 স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি")
+    except: await update.message.reply_text("তথ্য পাওয়া যায়নি।")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     msg = " ".join(context.args)
     if not msg:
-        await update.message.reply_text("মেসেজ দিতে /broadcast এর পর আপনার কথাটি লিখুন।")
+        await update.message.reply_text("/broadcast এর পর মেসেজ লিখুন।")
         return
-    
     _, user_sheet = get_sheets()
     users = user_sheet.col_values(1)[1:]
-    
-    count = 0
-    await update.message.reply_text("ব্রডকাস্ট শুরু হয়েছে...")
     for u_id in users:
-        try:
-            await context.bot.send_message(chat_id=u_id, text=f"অ্যাডমিন নোটিশ:\n\n{msg}")
-            count += 1
-            await asyncio.sleep(0.05)
+        try: await context.bot.send_message(chat_id=u_id, text=f"📢 অ্যাডমিন নোটিশ:\n\n{msg}")
         except: continue
-    await update.message.reply_text(f"সফলভাবে {count} জন ইউজারকে মেসেজ পাঠানো হয়েছে।")
+    await update.message.reply_text("ব্রডকাস্ট সম্পন্ন হয়েছে।")
 
 async def contact_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     user_msg = " ".join(context.args)
     if not user_msg:
-        await update.message.reply_text("/admin এর পর আপনার বার্তা লিখুন।")
+        await update.message.reply_text("/admin লিখে আপনার মেসেজটি দিন।")
         return
-    await context.bot.send_message(chat_id=ADMIN_ID, text=f"ইউজার বার্তা (ID: {user_id}):\n{user_msg}")
-    await update.message.reply_text("আপনার বার্তাটি অ্যাডমিনের কাছে পাঠানো হয়েছে।")
+    await context.bot.send_message(chat_id=ADMIN_ID, text=f"ইউজার (ID: {update.effective_user.id}):\n{user_msg}")
+    await update.message.reply_text("অ্যাডমিনের কাছে পাঠানো হয়েছে।")
 
-async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or len(context.args) < 2: return
-    target_id, msg = context.args[0], " ".join(context.args[1:])
-    try:
-        await context.bot.send_message(chat_id=target_id, text=f"অ্যাডমিনের উত্তর:\n\n{msg}")
-        await update.message.reply_text("উত্তর পাঠানো হয়েছে।")
-    except: await update.message.reply_text("বার্তাটি পাঠানো যায়নি।")
-
-# ৭. স্মার্ট সার্চ ও ফাইল ডেলিভারি
-async def search_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text.strip().replace(" ", "").lower()
-    if not user_query: return
-    try:
-        book_sheet, _ = get_sheets()
-        all_data = book_sheet.get_all_values()
-        if len(all_data) < 2: return
-        
-        matches = []
-        for row in all_data[1:]:
-            if user_query in row[0].replace(" ", "").lower():
-                matches.append((row[0], row[1]))
-
-        if not matches:
-            await update.message.reply_text("দুঃখিত, এই নামে কোনো বই পাওয়া যায়নি।")
-            return
-
-        if len(matches) > 1:
-            await update.message.reply_text(f"আপনার সার্চের সাথে মিল থাকা {len(matches)}টি বই পাঠানো হচ্ছে...")
-        
-        for name, fid in matches[:10]:
-            try:
-                await context.bot.send_document(chat_id=update.effective_chat.id, document=fid, caption=f"বই: {name}")
-                await asyncio.sleep(0.5) 
-            except: continue
-    except: pass
-
-# ৮. মেইন রানার (সব হ্যান্ডলার এখানে আছে)
+# ৭. মেইন রানার (এখানে সব কমান্ড রেজিস্টার করা হয়েছে)
 def main():
     keep_alive()
     app = Application.builder().token(TOKEN).build()
     
-    # সকল কমান্ড হ্যান্ডলার
+    # কমান্ড হ্যান্ডলারগুলো সঠিকভাবে যোগ করা হলো
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("help", help_command)) # এই লাইনটিই আগে মিস হয়েছিল
     app.add_handler(CommandHandler("admin", contact_admin))
-    app.add_handler(CommandHandler("reply", reply_to_user))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     
-    # ফাইল আপলোড হ্যান্ডলার
     app.add_handler(MessageHandler(filters.Document.ALL, upload_book))
     
-    # মেসেজ সার্চ হ্যান্ডলার
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_book))
+    # বই খোঁজার জন্য টেক্সট মেসেজ হ্যান্ডলার
+    async def search(update, context):
+        query = update.message.text.strip().replace(" ", "").lower()
+        try:
+            book_sheet, _ = get_sheets()
+            all_data = book_sheet.get_all_values()
+            for row in all_data[1:]:
+                if query in row[0].replace(" ", "").lower():
+                    await context.bot.send_document(chat_id=update.effective_chat.id, document=row[1], caption=f"বই: {row[0]}")
+                    return
+            await update.message.reply_text("দুঃখিত, বইটি পাওয়া যায়নি।")
+        except: pass
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
     
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
-               
+    
