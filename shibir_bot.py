@@ -10,7 +10,7 @@ from flask import Flask
 from threading import Thread
 
 # ১. কনফিগারেশন
-TOKEN = '8762483955:AAHUigW64ikrWN39Ok5l4eGPvtRVewX-zMg'
+TOKEN = '8762483955:AAF9GLhTVaIZWfP0ybduNVBFVVJ5-HWHe3Y' # নতুন টোকেন বসানো হয়েছে
 ADMIN_ID = 8596482199
 SHEET_NAME = "MyBotDB"
 GEMINI_API_KEY = "AIzaSyAuT06iRlvTPkDtzkyaV4u7eW_rMLqXSsc"
@@ -19,10 +19,10 @@ GEMINI_API_KEY = "AIzaSyAuT06iRlvTPkDtzkyaV4u7eW_rMLqXSsc"
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# ২. ওয়েব সার্ভার (রেন্ডার সচল রাখার জন্য)
+# ২. ওয়েব সার্ভার (রেন্ডার চালু রাখার জন্য)
 web_app = Flask('')
 @web_app.route('/')
-def home(): return "Shibir Online Library Bot is Fully Operational!"
+def home(): return "AI Library Bot is Live with New Token!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -43,7 +43,7 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ৪. ইউজার কমান্ডস
+# ৪. কমান্ডসমূহ
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     try:
@@ -51,64 +51,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id not in user_sheet.col_values(1):
             user_sheet.append_row([user_id])
     except: pass
-    await update.message.reply_text("আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইটির নাম লিখে মেসেজ দিন।")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "📖 বট ব্যবহারের গাইডলাইন:\n\n"
-        "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখুন (বাংলা, ইংরেজি বা আংশিক নাম হলেও চলবে)।\n"
-        "২. অ্যাডমিন: নতুন বই বা সমস্যার জন্য /admin লিখে আপনার কথাটি লিখুন।"
-    )
-    await update.message.reply_text(help_text)
-
-# ৫. অ্যাডমিন কন্ট্রোলস (Stats, Broadcast, Reply)
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        book_sheet, user_sheet = get_sheets()
-        total_users = len(user_sheet.col_values(1)) - 1
-        total_books = len(book_sheet.col_values(1)) - 1
-        await update.message.reply_text(f"📊 স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি")
-    except: await update.message.reply_text("তথ্য পাওয়া যায়নি।")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    msg = " ".join(context.args)
-    if not msg:
-        await update.message.reply_text("/broadcast এর পর মেসেজ লিখুন।")
-        return
-    _, user_sheet = get_sheets()
-    users = user_sheet.col_values(1)[1:]
-    for u_id in users:
-        try: await context.bot.send_message(chat_id=u_id, text=f"📢 অ্যাডমিন নোটিশ:\n\n{msg}")
-        except: continue
-    await update.message.reply_text("ব্রডকাস্ট সম্পন্ন হয়েছে।")
+    await update.message.reply_text("আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নামটি লিখুন।")
 
 async def contact_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_msg = " ".join(context.args)
-    user_id = update.effective_user.id
     if not user_msg:
-        await update.message.reply_text("/admin লিখে আপনার মেসেজটি দিন।")
+        await update.message.reply_text("/admin লিখে আপনার কথাটি লিখুন।")
         return
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"📩 নতুন মেসেজ!\nইউজার আইডি: `{user_id}`\nবার্তা: {user_msg}\n\nরিপ্লাই দিতে: `/reply {user_id} আপনার বার্তা`",
-        parse_mode='Markdown'
-    )
+    await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 মেসেজ!\nID: `{update.effective_user.id}`\nবার্তা: {user_msg}", parse_mode='Markdown')
     await update.message.reply_text("মেসেজটি অ্যাডমিনের কাছে পাঠানো হয়েছে।")
 
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    if len(context.args) < 2:
-        await update.message.reply_text("সঠিক নিয়ম: /reply [user_id] [মেসেজ]")
-        return
+    if update.effective_user.id != ADMIN_ID or len(context.args) < 2: return
     try:
         target_id, reply_msg = context.args[0], " ".join(context.args[1:])
         await context.bot.send_message(chat_id=target_id, text=f"📩 অ্যাডমিন রিপ্লাই:\n\n{reply_msg}")
-        await update.message.reply_text(f"✅ পাঠানো হয়েছে।")
+        await update.message.reply_text("✅ পাঠানো হয়েছে।")
     except: await update.message.reply_text("❌ পাঠানো যায়নি।")
 
-# ৬. স্মার্ট AI সার্চ ও সাজেস্ট ইঞ্জিন
+# ৫. স্মার্ট AI সার্চ ও সাজেস্ট ইঞ্জিন
 async def handle_ai_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.strip()
     try:
@@ -121,11 +82,10 @@ async def handle_ai_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ইউজার লিখেছে: '{user_text}'.\n"
             f"আমাদের লাইব্রেরিতে এই বইগুলো আছে: {books_string}.\n\n"
             "নির্দেশনা:\n"
-            "১. ইউজার যদি ইংরেজি হরফে (যেমন: subhe sadik) লেখে, তবে উচ্চারণ মিলিয়ে তালিকার সঠিক বাংলা বইটি চিহ্নিত করো।\n"
-            "২. ইউজার যদি বইয়ের আংশিক নাম লেখে (যেমন: 'কর্মী সহায়িকা'), তবে তালিকার পূর্ণ নাম (যেমন: 'কর্মী মানোন্নয়ন সহায়িকা') খুঁজে বের করো।\n"
-            "৩. যদি নিশ্চিত হও এটি কোনো বই, তবে শুধুমাত্র সঠিক পুরো নামটি উত্তর হিসেবে দাও।\n"
-            "৪. যদি সন্দেহ থাকে কিন্তু কিছু মিল থাকে, তবে সম্ভাব্য ২-৩টি বই সাজেস্ট করো (যেমন: 'আপনি কি ... খুঁজছেন?')।\n"
-            "৫. যদি একদমই না মেলে, তবে সাধারণ বন্ধুর মতো সংক্ষেপে বাংলায় উত্তর দাও।"
+            "১. ইউজার ইংরেজি (যেমন: subhe sadik) বা ভুল বানান বা আংশিক নাম (যেমন: কর্মী সহায়িকা) লিখলে উচ্চারণ ও অর্থ মিলিয়ে আমাদের তালিকার সঠিক পুরো বইটি খুঁজে বের করো।\n"
+            "২. যদি নিশ্চিত হও এটি কোনো বই, তবে উত্তর হিসেবে শুধু সেই সঠিক বইটির পুরো নাম দাও (কোনো বাড়তি কথা লিখবে না)।\n"
+            "৩. যদি পুরোপুরি নিশ্চিত না হও তবে সম্ভাব্য ২-৩টি বই সাজেস্ট করো সংক্ষেপে (যেমন: আপনি কি ... খুঁজছেন?)।\n"
+            "৪. অন্যথায় সাধারণ কথা হিসেবে বাংলায় উত্তর দাও।"
         )
         
         response = ai_model.generate_content(prompt)
@@ -133,7 +93,8 @@ async def handle_ai_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         found = False
         for row in all_rows[1:]:
-            if ai_response.lower() == row[0].lower() or ai_response == row[0]:
+            # AI এর উত্তরের সাথে শিটের বইয়ের নাম নিখুঁতভাবে মেলানো হচ্ছে
+            if ai_response.lower() == row[0].lower() or row[0].lower() in ai_response.lower():
                 await context.bot.send_document(chat_id=update.effective_chat.id, document=row[1], caption=f"✅ আপনার বই: {row[0]}")
                 found = True
                 break
@@ -144,7 +105,7 @@ async def handle_ai_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"AI Error: {e}")
 
-# ৭. বই আপলোড ফিচার (অ্যাডমিন)
+# ৬. বই আপলোড (অ্যাডমিন)
 async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     doc = update.message.document
@@ -152,24 +113,22 @@ async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         book_sheet, _ = get_sheets()
         book_sheet.append_row([name, doc.file_id])
-        await update.message.reply_text(f"✅ সফলভাবে সেভ হয়েছে: {name}")
-    except: await update.message.reply_text("❌ শিটে সেভ করা যায়নি।")
+        await update.message.reply_text(f"✅ সেভ হয়েছে: {name}")
+    except: pass
 
-# ৮. মেইন রানার
+# ৭. মেইন রানার
 def main():
     keep_alive()
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("admin", contact_admin))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("reply", reply_to_user))
-    
     app.add_handler(MessageHandler(filters.Document.ALL, upload_book))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_search))
     
+    # drop_pending_updates=True জ্যাম ছাড়াতে সাহায্য করবে
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
+    
