@@ -22,7 +22,7 @@ ai_model = genai.GenerativeModel('gemini-1.5-flash')
 # ২. ওয়েব সার্ভার
 web_app = Flask('')
 @web_app.route('/')
-def home(): return "Library Bot is Online!"
+def home(): return "Library Bot is Online and Reply Fixed!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -42,7 +42,7 @@ def get_sheets():
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ৪. ইউজার কমান্ডস (আপনার দেওয়া টেক্সট অনুযায়ী)
+# ৪. ইউজার কমান্ডস
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     try:
@@ -66,7 +66,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text)
 
-# ৫. এডমিন ফিচারস
+# ৫. এডমিন ফিচারস (Stats, Broadcast, Reply Fixed)
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
@@ -93,11 +93,26 @@ async def contact_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_msg:
         await update.message.reply_text("/admin লিখে আপনার কথাটি লিখুন।")
         return
+    # এডমিনকে জানানো
     await context.bot.send_message(
         chat_id=ADMIN_ID,
-        text=f"নতুন মেসেজ!\nইউজার আইডি: {user_id}\nবার্তা: {user_msg}"
+        text=f"নতুন মেসেজ!\nইউজার আইডি: `{user_id}`\nবার্তা: {user_msg}\n\nরিপ্লাই দিতে লিখুন: `/reply {user_id} আপনার বার্তা`",
+        parse_mode='Markdown'
     )
     await update.message.reply_text("মেসেজটি এডমিনের কাছে পাঠানো হয়েছে।")
+
+async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    if len(context.args) < 2:
+        await update.message.reply_text("ব্যবহার: `/reply [ইউজার_আইডি] [বার্তা]`")
+        return
+    try:
+        target_id = context.args[0]
+        reply_msg = " ".join(context.args[1:])
+        await context.bot.send_message(chat_id=target_id, text=f"এডমিন রিপ্লাই:\n\n{reply_msg}")
+        await update.message.reply_text(f"ইউজারকে ({target_id}) রিপ্লাই পাঠানো হয়েছে।")
+    except Exception as e:
+        await update.message.reply_text(f"ভুল হয়েছে: {e}")
 
 # ৬. হাইব্রিড সার্চ (স্বাভাবিক ফিচার + AI ব্যাকআপ)
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -158,14 +173,20 @@ async def upload_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     Thread(target=run_web).start()
     app = Application.builder().token(TOKEN).build()
+    
+    # কমান্ড হ্যান্ডলার
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("admin", contact_admin))
+    app.add_handler(CommandHandler("reply", reply_to_user)) # রিপ্লাই অপশনটি এখানে যুক্ত করা হয়েছে
+    
+    # মেসেজ হ্যান্ডলার
     app.add_handler(MessageHandler(filters.Document.ALL, upload_book))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
+    
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__': main()
-                
+    
