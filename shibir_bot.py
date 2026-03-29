@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import time
 import uuid
 from difflib import SequenceMatcher, get_close_matches
 from threading import Thread
@@ -38,11 +37,7 @@ else:
 
 _cached_book_sheet = None
 _cached_user_sheet = None
-
-# callback cache: token -> [book titles]
 _callback_cache = {}
-
-# admin reply map: admin_message_id -> user_chat_id
 _admin_reply_map = {}
 
 # ================= FLASK =================
@@ -108,6 +103,9 @@ def contains_volume(text):
 def tokenize(text):
     return re.findall(r"[\w\u0980-\u09FF]+", str(text).lower(), flags=re.UNICODE)
 
+def looks_like_latin(text):
+    return bool(re.search(r"[A-Za-z]", str(text))) and not bool(re.search(r"[\u0980-\u09FF]", str(text)))
+
 def rank_candidates(query, titles, limit=20):
     qn = normalize(query)
     q_tokens = set(tokenize(query))
@@ -133,22 +131,67 @@ def clean_candidate_line(line):
     line = re.sub(r"^[\-\*\d\.\)\s]+", "", line)
     return line.strip()
 
+def is_url_like(text):
+    return bool(re.search(r"(https?://|www\.|t\.me/|telegram\.me/)", str(text), flags=re.I))
+
+def clean_title_like_text(text):
+    text = str(text).strip()
+    text = re.sub(r"^[\-\*\d\.\)\s]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def derive_book_name_from_caption_or_filename(caption, file_name):
+    candidates = []
+
+    if caption:
+        for raw_line in str(caption).splitlines():
+            line = clean_title_like_text(raw_line)
+            if not line:
+                continue
+
+            low = line.lower()
+
+            if low.startswith("/upload"):
+                line = line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) > 1 else ""
+                line = clean_title_like_text(line)
+
+            if not line:
+                continue
+
+            if is_url_like(line):
+                continue
+
+            if low.startswith("forwarded from"):
+                continue
+
+            candidates.append(line)
+
+    if candidates:
+        return candidates[0]
+
+    if file_name:
+        base = os.path.splitext(str(file_name))[0]
+        base = base.replace("_", " ").replace("-", " ")
+        base = re.sub(r"\s+", " ", base).strip()
+        base = clean_title_like_text(base)
+        if base and not is_url_like(base):
+            return base
+
+    return "অজানা বই"
+
 def make_inline_keyboard(titles):
     token = uuid.uuid4().hex[:10]
-    _callback_cache[token] = titles[:10]
-
-    keyboard = [
-        [InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")]
-        for i, title in enumerate(titles[:10])
-    ]
+    titles = titles[:10]
+    _callback_cache[token] = titles
+    keyboard = [[InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")] for i, title in enumerate(titles)]
     return InlineKeyboardMarkup(keyboard)
 
-async def ensure_user_saved(update, user_sheet):
+async def ensure_user_saved(user_id, user_sheet):
     if not user_sheet:
         return
     try:
-        uid = str(update.effective_user.id)
         users = user_sheet.col_values(1)
+        uid = str(user_id)
         if uid not in users:
             user_sheet.append_row([uid])
     except Exception as e:
@@ -210,10 +253,13 @@ async def upsert_book(book_sheet, book_name, file_id):
         return "error"
 
 async def get_gemini_suggestions(user_text_raw, candidate_titles):
+    if not candidate_titles:
+        return []
+
     if not ai_model:
         return candidate_titles[:5]
 
-    candidate_block = "\n".join([f"{i+1}. {title}" for i, title in enumerate(candidate_titles[:20])])
+    candidate_block = "\n".join([f"{i+1}. {title}" for i, title in enumerate(candidate_titles[:30])])
 
     prompt = f"""
 ইউজারের লেখা: {user_text_raw}
@@ -226,6 +272,7 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
 - এক লাইনে একটি করে
 - সর্বোচ্চ 5টি
 - কোনো ব্যাখ্যা নয়
+- যদি ইউজার ইংলিশে বাংলা বইয়ের নাম লিখে থাকে, তাহলে উচ্চারণ দেখে মিলিয়ে দেবে
 """
 
     try:
@@ -249,7 +296,6 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
             if close:
                 final.append(normalized_map[close[0]])
 
-        # unique preserve order
         unique_final = []
         seen = set()
         for item in final:
@@ -257,10 +303,7 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
                 seen.add(item)
                 unique_final.append(item)
 
-        if unique_final:
-            return unique_final[:5]
-
-        return candidate_titles[:5]
+        return unique_final[:5] if unique_final else candidate_titles[:5]
 
     except Exception as e:
         logging.error(f"Gemini suggestion error: {e}")
@@ -273,12 +316,7 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         await context.bot.send_message(chat_id=chat_id, text="❌ Database error")
         return
 
-    await ensure_user_saved(
-        type("obj", (), {
-            "effective_user": type("u", (), {"id": user_id})(),
-        })(),
-        user_sheet
-    )
+    await ensure_user_saved(user_id, user_sheet)
 
     try:
         all_data = book_sheet.get_all_values()
@@ -292,7 +330,6 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         user_norm = normalize(user_text_raw)
         book_names = [row[0] for row in all_data]
 
-        # ================= DIRECT PARTIAL MATCH =================
         matched = []
         for row in all_data:
             title_norm = normalize(row[0])
@@ -303,17 +340,19 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
             await send_books_by_rows(context, chat_id, matched)
             return
 
-        # ================= GEMINI ONLY AFTER NO MATCH =================
         if allow_gemini:
-            candidate_titles = rank_candidates(user_text_raw, book_names, limit=20)
+            if looks_like_latin(user_text_raw):
+                candidate_titles = book_names[:250]
+            else:
+                candidate_titles = rank_candidates(user_text_raw, book_names, limit=30)
+
             suggestions = await get_gemini_suggestions(user_text_raw, candidate_titles)
 
             if suggestions:
-                keyboard = make_inline_keyboard(suggestions)
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text="🤖 আমি কয়েকটা সম্ভাব্য বই খুঁজে পেয়েছি:",
-                    reply_markup=keyboard
+                    reply_markup=make_inline_keyboard(suggestions)
                 )
                 return
 
@@ -337,15 +376,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
         "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন\n"
-        "৩. স্ট্যাটাস: /stats\n"
-        "৪. ব্রডকাস্ট: /broadcast আপনার মেসেজ\n"
-        "৫. আপলোড: /upload + বইয়ের নাম (ডকুমেন্ট রিপ্লাই করে)\n"
+    
     )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
     text = update.message.text or ""
     parts = text.split(maxsplit=1)
     body = parts[1].strip() if len(parts) > 1 else ""
@@ -357,12 +391,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    book_sheet, _ = get_sheets()
-
     user = update.effective_user
+    chat_id = update.effective_chat.id
     user_name = user.full_name if user else "Unknown"
     user_username = f"@{user.username}" if user and user.username else "No username"
-    chat_id = update.effective_chat.id
 
     msg = (
         "📩 নতুন ইউজার মেসেজ\n\n"
@@ -376,14 +408,13 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent = await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
     _admin_reply_map[sent.message_id] = chat_id
-
     await update.message.reply_text("✅ মেসেজ এডমিনের কাছে পাঠানো হয়েছে")
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    book_sheet, user_sheet = get_sheets()
+    _, user_sheet = get_sheets()
     if not user_sheet:
         await update.message.reply_text("❌ User sheet error")
         return
@@ -450,17 +481,14 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_id = target_message.document.file_id
 
-    try:
-        result = await upsert_book(book_sheet, book_name, file_id)
-        if result == "updated":
-            await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
-        elif result == "added":
-            await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
-        else:
-            await update.message.reply_text("⚠️ আপলোড করা যায়নি")
-    except Exception as e:
-        logging.error(f"Upload error: {e}")
-        await update.message.reply_text("⚠️ Upload error")
+    result = await upsert_book(book_sheet, book_name, file_id)
+
+    if result == "updated":
+        await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
+    elif result == "added":
+        await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
+    else:
+        await update.message.reply_text("⚠️ আপলোড করা যায়নি")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -491,7 +519,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # Admin reply to user
     if user_id == ADMIN_ID:
         if update.message.reply_to_message:
             reply_to = update.message.reply_to_message.message_id
@@ -499,10 +526,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             if target_chat_id:
                 try:
-                    await context.bot.send_message(
-                        chat_id=target_chat_id,
-                        text=f"👨‍💼 এডমিন: {text}"
-                    )
+                    await context.bot.send_message(chat_id=target_chat_id, text=f"👨‍💼 এডমিন: {text}")
                     await update.message.reply_text("✅ ইউজারকে রিপ্লাই পাঠানো হয়েছে")
                     return
                 except Exception as e:
@@ -510,10 +534,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await update.message.reply_text("⚠️ রিপ্লাই পাঠানো যায়নি")
                     return
 
-        # Admin এর সাধারণ text search না ধরে নীরব থাকা
         return
 
-    # Normal user search
     await process_book_search(
         context=context,
         chat_id=update.effective_chat.id,
@@ -522,7 +544,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         allow_gemini=True
     )
 
-# ================= DOCUMENT HANDLER (ADMIN UPLOAD) =================
+# ================= DOCUMENT HANDLER (AUTO UPLOAD) =================
 
 async def handle_admin_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.document:
@@ -531,30 +553,24 @@ async def handle_admin_document(update: Update, context: ContextTypes.DEFAULT_TY
     if update.effective_user.id != ADMIN_ID:
         return
 
-    caption = (update.message.caption or "").strip()
-    if not caption.lower().startswith("/upload"):
-        return
-
     book_sheet, _ = get_sheets()
     if not book_sheet:
         await update.message.reply_text("❌ Sheet error")
         return
 
-    parts = caption.split(maxsplit=1)
-    book_name = parts[1].strip() if len(parts) > 1 else update.message.document.file_name or "অজানা বই"
+    caption = update.message.caption or ""
+    file_name = update.message.document.file_name or ""
+    book_name = derive_book_name_from_caption_or_filename(caption, file_name)
     file_id = update.message.document.file_id
 
-    try:
-        result = await upsert_book(book_sheet, book_name, file_id)
-        if result == "updated":
-            await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
-        elif result == "added":
-            await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
-        else:
-            await update.message.reply_text("⚠️ আপলোড করা যায়নি")
-    except Exception as e:
-        logging.error(f"Admin document upload error: {e}")
-        await update.message.reply_text("⚠️ Upload error")
+    result = await upsert_book(book_sheet, book_name, file_id)
+
+    if result == "updated":
+        await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
+    elif result == "added":
+        await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
+    else:
+        await update.message.reply_text("⚠️ আপলোড করা যায়নি")
 
 # ================= CALLBACK =================
 
@@ -616,16 +632,5 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
 
-    app.add_handler(CommandHandler(["admin", "Admin"], admin_command))
-    app.add_handler(CommandHandler(["broadcast", "Broadcast"], broadcast_command))
-    app.add_handler(CommandHandler(["upload", "Upload"], upload_command))
-    app.add_handler(CommandHandler(["stats", "Stats"], stats))
-
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_admin_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(Com
