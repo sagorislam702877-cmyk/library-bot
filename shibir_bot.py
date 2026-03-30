@@ -474,9 +474,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
         "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন\n"
-        "৩. স্ট্যাটাস: /stats\n"
-        "৪. ব্রডকাস্ট: /broadcast আপনার মেসেজ\n"
-        "৫. আপলোড: বইয়ের ডকুমেন্ট ফাইল বটকে ফরওয়ার্ড করলেই অটো সেভ হবে।\n"
+    
     )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
