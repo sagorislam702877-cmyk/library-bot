@@ -24,7 +24,7 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-TOKEN = os.environ.get("BOT_TOKEN", "8762483955:AAF9GLhTVaIZWfP0ybduNVBFVVJ5-HWHe3Y")
+TOKEN = os.environ.get("BOT_TOKEN", "8762483955:AAFUGY6uMdMmgOEoKhvYDtoJpXG142Kz-1Y")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8596482199"))
 SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM")
