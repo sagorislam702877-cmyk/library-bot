@@ -42,7 +42,7 @@ _cached_user_sheet = None
 _callback_cache = {}
 _admin_reply_map = {}
 
-BOOK_CACHE = {"ts": 0.0, "rows": []}
+BOOK_CACHE = {"ts": 0.0, "rows": [], "indexed": [], "titles": []}
 USER_CACHE = {"ts": 0.0, "ids": []}
 
 BOOK_CACHE_TTL = 45
@@ -98,19 +98,21 @@ def get_sheets():
 def invalidate_book_cache():
     BOOK_CACHE["ts"] = 0.0
     BOOK_CACHE["rows"] = []
+    BOOK_CACHE["indexed"] = []
+    BOOK_CACHE["titles"] = []
 
 def invalidate_user_cache():
     USER_CACHE["ts"] = 0.0
     USER_CACHE["ids"] = []
 
-async def get_book_rows_cached(force=False):
+async def get_book_cache(force=False):
     book_sheet, _ = get_sheets()
     if not book_sheet:
-        return []
+        return [], [], []
 
     now = time.time()
     if (not force) and BOOK_CACHE["rows"] and (now - BOOK_CACHE["ts"] < BOOK_CACHE_TTL):
-        return BOOK_CACHE["rows"]
+        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"]
 
     try:
         values = await asyncio.to_thread(book_sheet.get_all_values)
@@ -119,12 +121,24 @@ async def get_book_rows_cached(force=False):
             row for row in rows
             if row and len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()
         ]
+
+        indexed = []
+        titles = []
+        for row in rows:
+            title = str(row[0]).strip()
+            indexed.append((row, normalize(title)))
+            titles.append(title)
+
         BOOK_CACHE["rows"] = rows
+        BOOK_CACHE["indexed"] = indexed
+        BOOK_CACHE["titles"] = titles
         BOOK_CACHE["ts"] = now
-        return rows
+
+        return rows, indexed, titles
+
     except Exception as e:
         logging.error(f"Book cache load error: {e}")
-        return BOOK_CACHE["rows"]
+        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"]
 
 async def get_user_ids_cached(force=False):
     _, user_sheet = get_sheets()
@@ -142,10 +156,12 @@ async def get_user_ids_cached(force=False):
             x = str(x).strip()
             if x.isdigit():
                 ids.append(int(x))
+
         ids = list(dict.fromkeys(ids))
         USER_CACHE["ids"] = ids
         USER_CACHE["ts"] = now
         return ids
+
     except Exception as e:
         logging.error(f"User cache load error: {e}")
         return USER_CACHE["ids"]
@@ -259,14 +275,21 @@ def make_inline_keyboard(titles):
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def extract_target_chat_id_from_admin_message(message_text: str):
+    if not message_text:
+        return None
+    m = re.search(r"চ্যাট আইডি:\s*(\d+)", message_text)
+    if m:
+        return int(m.group(1))
+    return None
+
 async def ensure_user_saved(user_id, user_sheet):
     if not user_sheet:
         return
     try:
-        uid = str(user_id)
         cached_ids = await get_user_ids_cached()
         if user_id not in cached_ids:
-            await asyncio.to_thread(user_sheet.append_row, [uid])
+            await asyncio.to_thread(user_sheet.append_row, [str(user_id)])
             USER_CACHE["ids"].append(user_id)
             USER_CACHE["ts"] = time.time()
     except Exception as e:
@@ -335,7 +358,7 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
     if not ai_model:
         return candidate_titles[:5]
 
-    candidate_block = "\n".join([f"{i+1}. {title}" for i, title in enumerate(candidate_titles[:30])])
+    candidate_block = "\n".join([f"{i+1}. {title}" for i, title in enumerate(candidate_titles[:20])])
 
     prompt = f"""
 ইউজারের লেখা: {user_text_raw}
@@ -352,7 +375,11 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
 """
 
     try:
-        response = await asyncio.to_thread(ai_model.generate_content, prompt)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(ai_model.generate_content, prompt),
+            timeout=12
+        )
+
         if not response or not response.text:
             return candidate_titles[:5]
 
@@ -395,17 +422,15 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     await ensure_user_saved(user_id, user_sheet)
 
     try:
-        all_data = await get_book_rows_cached()
+        all_data, indexed_data, book_names = await get_book_cache()
         if not all_data:
             await context.bot.send_message(chat_id=chat_id, text="❌ বই পাওয়া যায়নি")
             return
 
         user_norm = normalize(user_text_raw)
-        book_names = [row[0] for row in all_data]
 
         matched = []
-        for row in all_data:
-            title_norm = normalize(row[0])
+        for row, title_norm in indexed_data:
             if user_norm and (user_norm in title_norm or title_norm in user_norm):
                 matched.append(row)
 
@@ -415,9 +440,9 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
 
         if allow_gemini:
             if looks_like_latin(user_text_raw):
-                candidate_titles = book_names[:250]
+                candidate_titles = book_names[:200]
             else:
-                candidate_titles = rank_candidates(user_text_raw, book_names, limit=30)
+                candidate_titles = rank_candidates(user_text_raw, book_names, limit=20)
 
             suggestions = await get_gemini_suggestions(user_text_raw, candidate_titles)
 
@@ -567,7 +592,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         total_users = len(await get_user_ids_cached(force=True))
-        total_books = len(await get_book_rows_cached(force=True))
+        total_books = len((await get_book_cache(force=True))[0])
 
         await update.message.reply_text(
             f"স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি"
@@ -589,6 +614,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if update.message.reply_to_message:
             reply_to = update.message.reply_to_message.message_id
             target_chat_id = _admin_reply_map.get(reply_to)
+
+            if not target_chat_id:
+                fallback_text = update.message.reply_to_message.text or ""
+                target_chat_id = extract_target_chat_id_from_admin_message(fallback_text)
 
             if target_chat_id:
                 try:
@@ -677,7 +706,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await process_book_search(
                 context=context,
-                chat_id=query.message.chat_id,
+                chat_id=query.message.chat.id,
                 user_text_raw=selected_title,
                 user_id=query.from_user.id,
                 allow_gemini=False
