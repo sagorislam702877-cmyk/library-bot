@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import os
 import re
+import time
 import uuid
 from difflib import SequenceMatcher, get_close_matches
 from threading import Thread
@@ -22,12 +24,12 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-TOKEN = os.environ.get("BOT_TOKEN", "8762483955:AAF9GLhTVaIZWfP0ybduNVBFVVJ5-HWHe3Y")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "8596482199"))
+TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_TELEGRAM_BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "PASTE_YOUR_ADMIN_ID"))
 SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "PASTE_YOUR_GEMINI_API_KEY")
 
-if GEMINI_API_KEY and GEMINI_API_KEY != "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM":
+if GEMINI_API_KEY and GEMINI_API_KEY != "PASTE_YOUR_GEMINI_API_KEY":
     genai.configure(api_key=GEMINI_API_KEY)
     ai_model = genai.GenerativeModel("gemini-1.5-flash")
 else:
@@ -39,6 +41,12 @@ _cached_book_sheet = None
 _cached_user_sheet = None
 _callback_cache = {}
 _admin_reply_map = {}
+
+BOOK_CACHE = {"ts": 0.0, "rows": []}
+USER_CACHE = {"ts": 0.0, "ids": []}
+
+BOOK_CACHE_TTL = 45
+USER_CACHE_TTL = 60
 
 # ================= FLASK =================
 
@@ -76,7 +84,6 @@ def get_sheets():
         client = gspread.authorize(creds)
 
         spreadsheet = client.open(SHEET_NAME)
-
         _cached_book_sheet = spreadsheet.worksheet("Sheet1")
         _cached_user_sheet = spreadsheet.worksheet("Users")
 
@@ -85,6 +92,63 @@ def get_sheets():
     except Exception as e:
         logging.error(f"Sheet Error: {e}")
         return None, None
+
+# ================= CACHE HELPERS =================
+
+def invalidate_book_cache():
+    BOOK_CACHE["ts"] = 0.0
+    BOOK_CACHE["rows"] = []
+
+def invalidate_user_cache():
+    USER_CACHE["ts"] = 0.0
+    USER_CACHE["ids"] = []
+
+async def get_book_rows_cached(force=False):
+    book_sheet, _ = get_sheets()
+    if not book_sheet:
+        return []
+
+    now = time.time()
+    if (not force) and BOOK_CACHE["rows"] and (now - BOOK_CACHE["ts"] < BOOK_CACHE_TTL):
+        return BOOK_CACHE["rows"]
+
+    try:
+        values = await asyncio.to_thread(book_sheet.get_all_values)
+        rows = values[1:] if len(values) > 1 else []
+        rows = [
+            row for row in rows
+            if row and len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()
+        ]
+        BOOK_CACHE["rows"] = rows
+        BOOK_CACHE["ts"] = now
+        return rows
+    except Exception as e:
+        logging.error(f"Book cache load error: {e}")
+        return BOOK_CACHE["rows"]
+
+async def get_user_ids_cached(force=False):
+    _, user_sheet = get_sheets()
+    if not user_sheet:
+        return []
+
+    now = time.time()
+    if (not force) and USER_CACHE["ids"] and (now - USER_CACHE["ts"] < USER_CACHE_TTL):
+        return USER_CACHE["ids"]
+
+    try:
+        values = await asyncio.to_thread(user_sheet.col_values, 1)
+        ids = []
+        for x in values[1:] if len(values) > 1 else []:
+            x = str(x).strip()
+            if x.isdigit():
+                ids.append(int(x))
+        ids = list(dict.fromkeys(ids))
+        USER_CACHE["ids"] = ids
+        USER_CACHE["ts"] = now
+        return ids
+    except Exception as e:
+        logging.error(f"User cache load error: {e}")
+        return USER_CACHE["ids"]
 
 # ================= UTIL =================
 
@@ -134,6 +198,9 @@ def clean_candidate_line(line):
 def is_url_like(text):
     return bool(re.search(r"(https?://|www\.|t\.me/|telegram\.me/)", str(text), flags=re.I))
 
+def remove_urls(text):
+    return re.sub(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+)", "", str(text), flags=re.I)
+
 def clean_title_like_text(text):
     text = str(text).strip()
     text = re.sub(r"^[\-\*\d\.\)\s]+", "", text)
@@ -155,13 +222,16 @@ def derive_book_name_from_caption_or_filename(caption, file_name):
                 line = line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) > 1 else ""
                 line = clean_title_like_text(line)
 
+            line = remove_urls(line)
+            line = clean_title_like_text(line)
+
             if not line:
                 continue
 
-            if is_url_like(line):
+            if low.startswith("forwarded from"):
                 continue
 
-            if low.startswith("forwarded from"):
+            if is_url_like(line):
                 continue
 
             candidates.append(line)
@@ -183,17 +253,22 @@ def make_inline_keyboard(titles):
     token = uuid.uuid4().hex[:10]
     titles = titles[:10]
     _callback_cache[token] = titles
-    keyboard = [[InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")] for i, title in enumerate(titles)]
+    keyboard = [
+        [InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")]
+        for i, title in enumerate(titles)
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 async def ensure_user_saved(user_id, user_sheet):
     if not user_sheet:
         return
     try:
-        users = user_sheet.col_values(1)
         uid = str(user_id)
-        if uid not in users:
-            user_sheet.append_row([uid])
+        cached_ids = await get_user_ids_cached()
+        if user_id not in cached_ids:
+            await asyncio.to_thread(user_sheet.append_row, [uid])
+            USER_CACHE["ids"].append(user_id)
+            USER_CACHE["ts"] = time.time()
     except Exception as e:
         logging.error(f"User save error: {e}")
 
@@ -232,9 +307,8 @@ async def send_books_by_rows(context: ContextTypes.DEFAULT_TYPE, chat_id: int, r
 
 async def upsert_book(book_sheet, book_name, file_id):
     try:
-        values = book_sheet.get_all_values()
+        values = await asyncio.to_thread(book_sheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
-
         target_norm = normalize(book_name)
 
         for idx, row in enumerate(rows, start=2):
@@ -242,10 +316,12 @@ async def upsert_book(book_sheet, book_name, file_id):
                 continue
             existing_name = str(row[0]).strip() if len(row) > 0 else ""
             if existing_name and normalize(existing_name) == target_norm:
-                book_sheet.update(f"A{idx}:B{idx}", [[book_name, file_id]])
+                await asyncio.to_thread(book_sheet.update, f"A{idx}:B{idx}", [[book_name, file_id]])
+                invalidate_book_cache()
                 return "updated"
 
-        book_sheet.append_row([book_name, file_id])
+        await asyncio.to_thread(book_sheet.append_row, [book_name, file_id])
+        invalidate_book_cache()
         return "added"
 
     except Exception as e:
@@ -276,7 +352,7 @@ async def get_gemini_suggestions(user_text_raw, candidate_titles):
 """
 
     try:
-        response = ai_model.generate_content(prompt)
+        response = await asyncio.to_thread(ai_model.generate_content, prompt)
         if not response or not response.text:
             return candidate_titles[:5]
 
@@ -319,10 +395,7 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     await ensure_user_saved(user_id, user_sheet)
 
     try:
-        all_data = book_sheet.get_all_values()
-        all_data = all_data[1:] if len(all_data) > 1 else []
-        all_data = [row for row in all_data if row and len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()]
-
+        all_data = await get_book_rows_cached()
         if not all_data:
             await context.bot.send_message(chat_id=chat_id, text="❌ বই পাওয়া যায়নি")
             return
@@ -376,7 +449,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
         "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন\n"
-    
+        "৩. স্ট্যাটাস: /stats\n"
+        "৪. ব্রডকাস্ট: /broadcast আপনার মেসেজ\n"
+        "৫. আপলোড: বইয়ের ডকুমেন্ট ফাইল বটকে ফরওয়ার্ড করলেই অটো সেভ হবে।\n"
     )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,15 +505,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ব্যবহার: /broadcast আপনার মেসেজ")
         return
 
-    users = user_sheet.col_values(1)[1:] if len(user_sheet.col_values(1)) > 1 else []
-    user_ids = []
-
-    for uid in users:
-        uid = str(uid).strip()
-        if uid.isdigit():
-            user_ids.append(int(uid))
-
-    user_ids = list(dict.fromkeys(user_ids))
+    user_ids = await get_user_ids_cached(force=True)
 
     success = 0
     failed = 0
@@ -480,7 +547,6 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         book_name = target_message.document.file_name or "অজানা বই"
 
     file_id = target_message.document.file_id
-
     result = await upsert_book(book_sheet, book_name, file_id)
 
     if result == "updated":
@@ -500,8 +566,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        total_users = len(user_sheet.col_values(1)) - 1
-        total_books = len(book_sheet.col_values(1)) - 1
+        total_users = len(await get_user_ids_cached(force=True))
+        total_books = len(await get_book_rows_cached(force=True))
 
         await update.message.reply_text(
             f"স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি"
@@ -533,6 +599,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     logging.error(f"Admin reply error: {e}")
                     await update.message.reply_text("⚠️ রিপ্লাই পাঠানো যায়নি")
                     return
+            else:
+                await update.message.reply_text("⚠️ এই মেসেজটার ইউজার লিংক পাওয়া যায়নি")
+                return
 
         return
 
