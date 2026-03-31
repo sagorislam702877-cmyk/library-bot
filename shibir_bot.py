@@ -1,14 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import re
 import time
-import uuid
-from difflib import SequenceMatcher, get_close_matches
 from threading import Thread
+from difflib import get_close_matches
 
 import gspread
-import google.generativeai as genai
 from flask import Flask
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,34 +19,44 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    ContextTypes
+    ContextTypes,
 )
 
 # ================= CONFIG =================
 
-TOKEN = os.environ.get("BOT_TOKEN", "8762483955:AAFUGY6uMdMmgOEoKhvYDtoJpXG142Kz-1Y")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "8596482199"))
-SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM")
+BOT_TOKEN = 8762483955:AAFUGY6uMdMmgOEoKhvYDtoJpXG142Kz-1Y", "").strip()
+ADMIN_ID = int(os.environ.get("8596482199", "0"))
+SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB").strip()
+LOG_SHEET_NAME = os.environ.get("LOG_SHEET_NAME", "Logs").strip()
 
-if GEMINI_API_KEY and GEMINI_API_KEY != "AIzaSyBJnqVnln-PtyPxpOYptJxy0Pisb8nxmHM":
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    ai_model = None
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is missing")
+if ADMIN_ID == 0:
+    raise RuntimeError("ADMIN_ID is missing or invalid")
 
 # ================= CACHE =================
 
 _cached_book_sheet = None
 _cached_user_sheet = None
+_cached_log_sheet = None
 _callback_cache = {}
 _admin_reply_map = {}
 
-BOOK_CACHE = {"ts": 0.0, "rows": [], "indexed": [], "titles": []}
-USER_CACHE = {"ts": 0.0, "ids": []}
+BOOK_CACHE = {
+    "ts": 0.0,
+    "rows": [],
+    "indexed": [],
+    "titles": [],
+    "lookup": {},
+}
 
-BOOK_CACHE_TTL = 45
-USER_CACHE_TTL = 60
+USER_CACHE = {
+    "ts": 0.0,
+    "ids": [],
+}
+
+BOOK_CACHE_TTL = 300
+USER_CACHE_TTL = 300
 
 # ================= FLASK =================
 
@@ -58,27 +68,27 @@ def home():
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
-    web_app.run(host="0.0.0.0", port=port)
+    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # ================= LOGGING =================
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 # ================= SHEETS =================
 
 def get_sheets():
-    global _cached_book_sheet, _cached_user_sheet
+    global _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
 
     if _cached_book_sheet and _cached_user_sheet:
-        return _cached_book_sheet, _cached_user_sheet
+        return _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
 
     try:
         scope = [
             "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
+            "https://www.googleapis.com/auth/drive",
         ]
         creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
         client = gspread.authorize(creds)
@@ -87,11 +97,30 @@ def get_sheets():
         _cached_book_sheet = spreadsheet.worksheet("Sheet1")
         _cached_user_sheet = spreadsheet.worksheet("Users")
 
-        return _cached_book_sheet, _cached_user_sheet
+        try:
+            _cached_log_sheet = spreadsheet.worksheet(LOG_SHEET_NAME)
+        except Exception:
+            _cached_log_sheet = spreadsheet.add_worksheet(title=LOG_SHEET_NAME, rows=5000, cols=10)
+            _cached_log_sheet.append_row(
+                [
+                    "timestamp",
+                    "event",
+                    "user_id",
+                    "username",
+                    "chat_id",
+                    "query",
+                    "normalized_query",
+                    "status",
+                    "matched_title",
+                    "note",
+                ]
+            )
+
+        return _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
 
     except Exception as e:
         logging.error(f"Sheet Error: {e}")
-        return None, None
+        return None, None, None
 
 # ================= CACHE HELPERS =================
 
@@ -100,48 +129,195 @@ def invalidate_book_cache():
     BOOK_CACHE["rows"] = []
     BOOK_CACHE["indexed"] = []
     BOOK_CACHE["titles"] = []
+    BOOK_CACHE["lookup"] = {}
 
 def invalidate_user_cache():
     USER_CACHE["ts"] = 0.0
     USER_CACHE["ids"] = []
 
+# ================= TEXT UTIL =================
+
+def normalize(text):
+    if not text:
+        return ""
+    text = str(text).lower().strip()
+    text = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+    return text
+
+def tokenize(text):
+    return re.findall(r"[\w\u0980-\u09FF]+", str(text).lower(), flags=re.UNICODE)
+
+def looks_like_latin(text):
+    text = str(text)
+    return bool(re.search(r"[A-Za-z]", text)) and not bool(re.search(r"[\u0980-\u09FF]", text))
+
+def clean_title_like_text(text):
+    text = str(text).strip()
+    text = re.sub(r"^[\-\*\d\.\)\s]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def clean_candidate_line(line):
+    line = line.strip()
+    line = re.sub(r"^[\-\*\d\.\)\s]+", "", line)
+    return line.strip()
+
+def is_url_like(text):
+    return bool(re.search(r"(https?://|www\.|t\.me/|telegram\.me/)", str(text), flags=re.I))
+
+def remove_urls(text):
+    return re.sub(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+)", "", str(text), flags=re.I)
+
+# ================= AUTO ALIAS GENERATION =================
+
+BENGALI_LATIN_MAP = {
+    "অ": "a", "আ": "a", "ই": "i", "ঈ": "i", "উ": "u", "ঊ": "u", "ঋ": "ri", "এ": "e", "ঐ": "oi", "ও": "o", "ঔ": "ou",
+    "ক": "k", "খ": "kh", "গ": "g", "ঘ": "gh", "ঙ": "ng", "চ": "ch", "ছ": "chh", "জ": "j", "ঝ": "jh", "ঞ": "ny",
+    "ট": "t", "ঠ": "th", "ড": "d", "ঢ": "dh", "ণ": "n", "ত": "t", "থ": "th", "দ": "d", "ধ": "dh", "ন": "n",
+    "প": "p", "ফ": "f", "ব": "b", "ভ": "bh", "ম": "m", "য": "y", "র": "r", "ল": "l", "শ": "sh", "ষ": "sh",
+    "স": "s", "হ": "h", "ড়": "r", "ঢ়": "rh", "য়": "y", "ং": "ng", "ঃ": "h", "ঁ": "n", "ৎ": "t",
+    "া": "a", "ি": "i", "ী": "i", "ু": "u", "ূ": "u", "ে": "e", "ৈ": "oi", "ো": "o", "ৌ": "ou", "্": "",
+}
+
+def transliterate_bengali_to_latin(text):
+    if not text:
+        return ""
+    out = []
+    for ch in str(text):
+        out.append(BENGALI_LATIN_MAP.get(ch, ch))
+    result = "".join(out)
+    result = re.sub(r"[^a-zA-Z0-9\s]+", " ", result)
+    result = re.sub(r"\s+", " ", result).strip().lower()
+    return result
+
+def generate_auto_aliases(title):
+    aliases = set()
+    if not title:
+        return aliases
+
+    raw = str(title).strip()
+    raw_lower = raw.lower().strip()
+
+    variants = {
+        raw_lower,
+        raw,
+        normalize(raw),
+        normalize(raw.replace(" ", "")),
+    }
+
+    volume_removed = re.sub(r"(খণ্ড|খন্ড|volume|vol\.?|v\.?)\s*\d*", "", raw_lower, flags=re.I)
+    variants.add(normalize(volume_removed))
+    variants.add(normalize(volume_removed.replace(" ", "")))
+
+    tokens = [normalize(t) for t in tokenize(raw) if normalize(t)]
+    tokens = [t for t in tokens if len(t) >= 2]
+
+    for t in tokens:
+        variants.add(t)
+
+    if len(tokens) >= 2:
+        variants.add("".join(tokens))
+        variants.add(" ".join(tokens))
+        for i in range(len(tokens) - 1):
+            pair = tokens[i] + tokens[i + 1]
+            if len(pair) >= 3:
+                variants.add(pair)
+
+    latin = transliterate_bengali_to_latin(raw)
+    if latin:
+        variants.add(latin)
+        variants.add(normalize(latin))
+        variants.add(normalize(latin.replace(" ", "")))
+
+        latin_tokens = [normalize(t) for t in tokenize(latin) if normalize(t)]
+        for t in latin_tokens:
+            if len(t) >= 2:
+                variants.add(t)
+
+    aliases = {v for v in variants if v and len(v) >= 2}
+    return aliases
+
+def parse_manual_aliases(value):
+    aliases = set()
+    if not value:
+        return aliases
+
+    parts = re.split(r"[,;\n|/]+", str(value))
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        aliases.add(normalize(part))
+        aliases.update(generate_auto_aliases(part))
+    return aliases
+
+def build_search_index(rows):
+    lookup = {}
+    titles = []
+    indexed = []
+
+    for row in rows:
+        if not row or len(row) < 2:
+            continue
+
+        title = str(row[0]).strip()
+        file_id = str(row[1]).strip()
+
+        if not title or not file_id:
+            continue
+
+        title_norm = normalize(title)
+        titles.append(title)
+        indexed.append((row, title_norm))
+
+        aliases = set()
+        aliases.add(title_norm)
+        aliases.update(generate_auto_aliases(title))
+
+        if len(row) >= 3:
+            aliases.update(parse_manual_aliases(row[2]))
+
+        for alias in aliases:
+            if not alias:
+                continue
+            lookup.setdefault(alias, []).append(row)
+
+    return indexed, titles, lookup
+
 async def get_book_cache(force=False):
-    book_sheet, _ = get_sheets()
+    book_sheet, _, _ = get_sheets()
     if not book_sheet:
-        return [], [], []
+        return [], [], [], {}
 
     now = time.time()
     if (not force) and BOOK_CACHE["rows"] and (now - BOOK_CACHE["ts"] < BOOK_CACHE_TTL):
-        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"]
+        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"], BOOK_CACHE["lookup"]
 
     try:
         values = await asyncio.to_thread(book_sheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
+
         rows = [
             row for row in rows
             if row and len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip()
         ]
 
-        indexed = []
-        titles = []
-        for row in rows:
-            title = str(row[0]).strip()
-            indexed.append((row, normalize(title)))
-            titles.append(title)
+        indexed, titles, lookup = build_search_index(rows)
 
         BOOK_CACHE["rows"] = rows
         BOOK_CACHE["indexed"] = indexed
         BOOK_CACHE["titles"] = titles
+        BOOK_CACHE["lookup"] = lookup
         BOOK_CACHE["ts"] = now
 
-        return rows, indexed, titles
+        return rows, indexed, titles, lookup
 
     except Exception as e:
         logging.error(f"Book cache load error: {e}")
-        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"]
+        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"], BOOK_CACHE["lookup"]
 
 async def get_user_ids_cached(force=False):
-    _, user_sheet = get_sheets()
+    _, user_sheet, _ = get_sheets()
     if not user_sheet:
         return []
 
@@ -166,62 +342,31 @@ async def get_user_ids_cached(force=False):
         logging.error(f"User cache load error: {e}")
         return USER_CACHE["ids"]
 
-# ================= UTIL =================
+# ================= LOGS =================
 
-def normalize(text):
-    if not text:
-        return ""
-    text = str(text).lower().strip()
-    text = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
-    return text
+async def append_log(event, user_id, username, chat_id, query, normalized_query, status, matched_title="", note=""):
+    _, _, log_sheet = get_sheets()
+    if not log_sheet:
+        return
 
-def contains_volume(text):
-    keywords = ["খণ্ড", "vol", "volume"]
-    text = text.lower()
-    return any(k in text for k in keywords)
+    try:
+        row = [
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            event,
+            str(user_id or ""),
+            str(username or ""),
+            str(chat_id or ""),
+            str(query or ""),
+            str(normalized_query or ""),
+            str(status or ""),
+            str(matched_title or ""),
+            str(note or ""),
+        ]
+        await asyncio.to_thread(log_sheet.append_row, row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"Log write error: {e}")
 
-def tokenize(text):
-    return re.findall(r"[\w\u0980-\u09FF]+", str(text).lower(), flags=re.UNICODE)
-
-def looks_like_latin(text):
-    return bool(re.search(r"[A-Za-z]", str(text))) and not bool(re.search(r"[\u0980-\u09FF]", str(text)))
-
-def rank_candidates(query, titles, limit=20):
-    qn = normalize(query)
-    q_tokens = set(tokenize(query))
-
-    scored = []
-    for title in titles:
-        tn = normalize(title)
-        t_tokens = set(tokenize(title))
-
-        ratio = SequenceMatcher(None, qn, tn).ratio()
-        token_overlap = 0.0
-        if q_tokens and t_tokens:
-            token_overlap = len(q_tokens & t_tokens) / max(len(q_tokens), len(t_tokens))
-
-        score = (ratio * 0.8) + (token_overlap * 0.2)
-        scored.append((score, title))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [title for _, title in scored[:limit]]
-
-def clean_candidate_line(line):
-    line = line.strip()
-    line = re.sub(r"^[\-\*\d\.\)\s]+", "", line)
-    return line.strip()
-
-def is_url_like(text):
-    return bool(re.search(r"(https?://|www\.|t\.me/|telegram\.me/)", str(text), flags=re.I))
-
-def remove_urls(text):
-    return re.sub(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+)", "", str(text), flags=re.I)
-
-def clean_title_like_text(text):
-    text = str(text).strip()
-    text = re.sub(r"^[\-\*\d\.\)\s]+", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+# ================= BOOK NAME EXTRACTION =================
 
 def derive_book_name_from_caption_or_filename(caption, file_name):
     candidates = []
@@ -265,20 +410,25 @@ def derive_book_name_from_caption_or_filename(caption, file_name):
 
     return "অজানা বই"
 
+# ================= KEYBOARD =================
+
 def make_inline_keyboard(titles):
-    token = uuid.uuid4().hex[:10]
+    token = str(time.time_ns())[-10:]
     titles = titles[:10]
     _callback_cache[token] = titles
+
     keyboard = [
         [InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")]
         for i, title in enumerate(titles)
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# ================= USER / ADMIN HELPERS =================
+
 def extract_target_chat_id_from_admin_message(message_text: str):
     if not message_text:
         return None
-    m = re.search(r"চ্যাট আইডি:\s*(\d+)", message_text)
+    m = re.search(r"চ্যাট আইডি:\s*(-?\d+)", message_text)
     if m:
         return int(m.group(1))
     return None
@@ -290,7 +440,8 @@ async def ensure_user_saved(user_id, user_sheet):
         cached_ids = await get_user_ids_cached()
         if user_id not in cached_ids:
             await asyncio.to_thread(user_sheet.append_row, [str(user_id)])
-            USER_CACHE["ids"].append(user_id)
+            if user_id not in USER_CACHE["ids"]:
+                USER_CACHE["ids"].append(user_id)
             USER_CACHE["ts"] = time.time()
     except Exception as e:
         logging.error(f"User save error: {e}")
@@ -318,7 +469,7 @@ async def send_books_by_rows(context: ContextTypes.DEFAULT_TYPE, chat_id: int, r
             await context.bot.send_document(
                 chat_id=chat_id,
                 document=file_id,
-                caption=f"📘 {book_name}"
+                caption=f"📘 {book_name}",
             )
             sent += 1
         except BadRequest as e:
@@ -328,7 +479,7 @@ async def send_books_by_rows(context: ContextTypes.DEFAULT_TYPE, chat_id: int, r
 
     return sent
 
-async def upsert_book(book_sheet, book_name, file_id):
+async def upsert_book(book_sheet, book_name, file_id, aliases_text=""):
     try:
         values = await asyncio.to_thread(book_sheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
@@ -337,13 +488,31 @@ async def upsert_book(book_sheet, book_name, file_id):
         for idx, row in enumerate(rows, start=2):
             if not row:
                 continue
+
             existing_name = str(row[0]).strip() if len(row) > 0 else ""
             if existing_name and normalize(existing_name) == target_norm:
-                await asyncio.to_thread(book_sheet.update, f"A{idx}:B{idx}", [[book_name, file_id]])
+                existing_aliases = str(row[2]).strip() if len(row) >= 3 else ""
+                final_aliases = aliases_text.strip() if aliases_text.strip() else existing_aliases
+                if final_aliases:
+                    await asyncio.to_thread(
+                        book_sheet.update,
+                        f"A{idx}:C{idx}",
+                        [[book_name, file_id, final_aliases]],
+                    )
+                else:
+                    await asyncio.to_thread(
+                        book_sheet.update,
+                        f"A{idx}:B{idx}",
+                        [[book_name, file_id]],
+                    )
                 invalidate_book_cache()
                 return "updated"
 
-        await asyncio.to_thread(book_sheet.append_row, [book_name, file_id])
+        if aliases_text.strip():
+            await asyncio.to_thread(book_sheet.append_row, [book_name, file_id, aliases_text.strip()])
+        else:
+            await asyncio.to_thread(book_sheet.append_row, [book_name, file_id])
+
         invalidate_book_cache()
         return "added"
 
@@ -351,69 +520,16 @@ async def upsert_book(book_sheet, book_name, file_id):
         logging.error(f"Upsert book error: {e}")
         return "error"
 
-async def get_gemini_suggestions(user_text_raw, candidate_titles):
-    if not candidate_titles:
-        return []
+# ================= SEARCH =================
 
-    if not ai_model:
-        return candidate_titles[:5]
-
-    candidate_block = "\n".join([f"{i+1}. {title}" for i, title in enumerate(candidate_titles[:20])])
-
-    prompt = f"""
-ইউজারের লেখা: {user_text_raw}
-
-নিচের বইয়ের তালিকা থেকে সবচেয়ে সম্ভাব্য 5টি বই বেছে দাও:
-{candidate_block}
-
-নিয়ম:
-- শুধু ওই তালিকার ভেতরের বইয়ের নাম দেবে
-- এক লাইনে একটি করে
-- সর্বোচ্চ 5টি
-- কোনো ব্যাখ্যা নয়
-- যদি ইউজার ইংলিশে বাংলা বইয়ের নাম লিখে থাকে, তাহলে উচ্চারণ দেখে মিলিয়ে দেবে
-"""
-
-    try:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(ai_model.generate_content, prompt),
-            timeout=12
-        )
-
-        if not response or not response.text:
-            return candidate_titles[:5]
-
-        lines = [clean_candidate_line(x) for x in response.text.splitlines()]
-        lines = [x for x in lines if x]
-
-        normalized_map = {normalize(title): title for title in candidate_titles}
-        final = []
-
-        for line in lines:
-            ln = normalize(line)
-            if ln in normalized_map:
-                final.append(normalized_map[ln])
-                continue
-
-            close = get_close_matches(ln, list(normalized_map.keys()), n=1, cutoff=0.8)
-            if close:
-                final.append(normalized_map[close[0]])
-
-        unique_final = []
-        seen = set()
-        for item in final:
-            if item not in seen:
-                seen.add(item)
-                unique_final.append(item)
-
-        return unique_final[:5] if unique_final else candidate_titles[:5]
-
-    except Exception as e:
-        logging.error(f"Gemini suggestion error: {e}")
-        return candidate_titles[:5]
-
-async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_text_raw: str, user_id: int, allow_gemini=True):
-    book_sheet, user_sheet = get_sheets()
+async def process_book_search(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_text_raw: str,
+    user_id: int,
+    username: str = "",
+):
+    book_sheet, user_sheet, _ = get_sheets()
 
     if not book_sheet:
         await context.bot.send_message(chat_id=chat_id, text="❌ Database error")
@@ -422,43 +538,72 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     await ensure_user_saved(user_id, user_sheet)
 
     try:
-        all_data, indexed_data, book_names = await get_book_cache()
-        if not all_data:
+        rows, indexed_data, book_names, lookup = await get_book_cache()
+
+        if not rows:
             await context.bot.send_message(chat_id=chat_id, text="❌ বই পাওয়া যায়নি")
             return
 
         user_norm = normalize(user_text_raw)
 
+        if not user_norm:
+            await context.bot.send_message(chat_id=chat_id, text="❌ বইয়ের নাম লিখুন")
+            await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "EMPTY")
+            return
+
+        # 1) exact alias/title match
+        if user_norm in lookup:
+            matched_rows = lookup[user_norm]
+            sent = await send_books_by_rows(context, chat_id, matched_rows)
+            if sent > 0:
+                matched_title = str(matched_rows[0][0]).strip() if matched_rows else ""
+                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MATCH", matched_title, "alias/exact")
+                return
+
+        # 2) partial contains match
         matched = []
         for row, title_norm in indexed_data:
-            if user_norm and (user_norm in title_norm or title_norm in user_norm):
+            if user_norm in title_norm or title_norm in user_norm:
                 matched.append(row)
 
         if matched:
-            await send_books_by_rows(context, chat_id, matched)
-            return
+            sent = await send_books_by_rows(context, chat_id, matched)
+            if sent > 0:
+                matched_title = str(matched[0][0]).strip() if matched else ""
+                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MATCH", matched_title, "partial")
+                return
 
-        if allow_gemini:
-            if looks_like_latin(user_text_raw):
-                candidate_titles = book_names[:200]
-            else:
-                candidate_titles = rank_candidates(user_text_raw, book_names, limit=20)
+        # 3) fuzzy suggestions
+        close_keys = get_close_matches(user_norm, list(lookup.keys()), n=5, cutoff=0.72)
 
-            suggestions = await get_gemini_suggestions(user_text_raw, candidate_titles)
+        if close_keys:
+            suggestions = []
+            for key in close_keys:
+                for row in lookup.get(key, []):
+                    title = str(row[0]).strip()
+                    if title and title not in suggestions:
+                        suggestions.append(title)
+                    if len(suggestions) >= 10:
+                        break
+                if len(suggestions) >= 10:
+                    break
 
             if suggestions:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text="🤖 আমি কয়েকটা সম্ভাব্য বই খুঁজে পেয়েছি:",
-                    reply_markup=make_inline_keyboard(suggestions)
+                    reply_markup=make_inline_keyboard(suggestions),
                 )
+                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "SUGGESTION", suggestions[0], "fuzzy")
                 return
 
         await context.bot.send_message(chat_id=chat_id, text="❌ বইটি খুঁজে পাওয়া যাচ্ছে না")
+        await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MISS")
 
     except Exception as e:
         logging.error(f"Search error: {e}")
         await context.bot.send_message(chat_id=chat_id, text="⚠️ Error occurred")
+        await append_log("search", user_id, username, chat_id, user_text_raw, normalize(user_text_raw), "ERROR", note=str(e))
 
 # ================= COMMANDS =================
 
@@ -473,8 +618,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "বট ব্যবহারের নিয়মাবলী:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
         "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
-        "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন\n"
-    
+        "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন"
     )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -507,12 +651,13 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
     _admin_reply_map[sent.message_id] = chat_id
     await update.message.reply_text("✅ মেসেজ এডমিনের কাছে পাঠানো হয়েছে")
+    await append_log("admin_message", user.id if user else None, user_username, chat_id, body, normalize(body), "SENT_ADMIN")
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    _, user_sheet = get_sheets()
+    _, user_sheet, _ = get_sheets()
     if not user_sheet:
         await update.message.reply_text("❌ User sheet error")
         return
@@ -537,18 +682,20 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=uid, text=broadcast_text)
             success += 1
+            await asyncio.sleep(0.03)
         except Exception:
             failed += 1
 
     await update.message.reply_text(
         f"✅ Broadcast শেষ হয়েছে\nসফল: {success}\nব্যর্থ: {failed}"
     )
+    await append_log("broadcast", ADMIN_ID, "admin", update.effective_chat.id, broadcast_text, normalize(broadcast_text), "DONE", note=f"success={success},failed={failed}")
 
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    book_sheet, _ = get_sheets()
+    book_sheet, _, _ = get_sheets()
     if not book_sheet:
         await update.message.reply_text("❌ Sheet error")
         return
@@ -570,20 +717,24 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         book_name = target_message.document.file_name or "অজানা বই"
 
     file_id = target_message.document.file_id
-    result = await upsert_book(book_sheet, book_name, file_id)
+    aliases_text = target_message.caption or ""
+    result = await upsert_book(book_sheet, book_name, file_id, aliases_text=aliases_text)
 
     if result == "updated":
         await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "UPDATED")
     elif result == "added":
         await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "ADDED")
     else:
         await update.message.reply_text("⚠️ আপলোড করা যায়নি")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "ERROR")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    book_sheet, user_sheet = get_sheets()
+    book_sheet, user_sheet, log_sheet = get_sheets()
     if not book_sheet or not user_sheet:
         await update.message.reply_text("❌ Sheet error")
         return
@@ -591,13 +742,54 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         total_users = len(await get_user_ids_cached(force=True))
         total_books = len((await get_book_cache(force=True))[0])
+        total_logs = 0
+
+        try:
+            if log_sheet:
+                total_logs = len(await asyncio.to_thread(log_sheet.get_all_values)) - 1
+                if total_logs < 0:
+                    total_logs = 0
+        except Exception:
+            total_logs = 0
 
         await update.message.reply_text(
-            f"স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি"
+            f"স্ট্যাটাস:\nমোট ইউজার: {max(0, total_users)} জন\nমোট বই: {max(0, total_books)} টি\nমোট লগ: {max(0, total_logs)} টি"
         )
     except Exception as e:
         logging.error(f"Stats error: {e}")
         await update.message.reply_text("⚠️ Stats error")
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    _, _, log_sheet = get_sheets()
+    if not log_sheet:
+        await update.message.reply_text("❌ Log sheet error")
+        return
+
+    try:
+        values = await asyncio.to_thread(log_sheet.get_all_values)
+        rows = values[1:] if len(values) > 1 else []
+        last_rows = rows[-10:]
+
+        if not last_rows:
+            await update.message.reply_text("কোনো লগ নেই।")
+            return
+
+        lines = ["শেষ ১০টি লগ:\n"]
+        for row in last_rows:
+            ts = row[0] if len(row) > 0 else ""
+            event = row[1] if len(row) > 1 else ""
+            q = row[5] if len(row) > 5 else ""
+            status = row[7] if len(row) > 7 else ""
+            matched = row[8] if len(row) > 8 else ""
+            lines.append(f"• {ts} | {event} | {status} | {q} | {matched}")
+
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        logging.error(f"Logs command error: {e}")
+        await update.message.reply_text("⚠️ Logs read error")
 
 # ================= TEXT HANDLER =================
 
@@ -605,8 +797,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message or not update.message.text:
         return
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     text = update.message.text.strip()
+    username = f"@{user.username}" if user and user.username else ""
 
     if user_id == ADMIN_ID:
         if update.message.reply_to_message:
@@ -621,10 +815,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 try:
                     await context.bot.send_message(chat_id=target_chat_id, text=f"👨‍💼 এডমিন: {text}")
                     await update.message.reply_text("✅ ইউজারকে রিপ্লাই পাঠানো হয়েছে")
+                    await append_log("admin_reply", ADMIN_ID, username, target_chat_id, text, normalize(text), "SENT")
                     return
                 except Exception as e:
                     logging.error(f"Admin reply error: {e}")
                     await update.message.reply_text("⚠️ রিপ্লাই পাঠানো যায়নি")
+                    await append_log("admin_reply", ADMIN_ID, username, target_chat_id, text, normalize(text), "ERROR", note=str(e))
                     return
             else:
                 await update.message.reply_text("⚠️ এই মেসেজটার ইউজার লিংক পাওয়া যায়নি")
@@ -637,7 +833,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         chat_id=update.effective_chat.id,
         user_text_raw=text,
         user_id=user_id,
-        allow_gemini=True
+        username=username,
     )
 
 # ================= DOCUMENT HANDLER (AUTO UPLOAD) =================
@@ -649,7 +845,7 @@ async def handle_admin_document(update: Update, context: ContextTypes.DEFAULT_TY
     if update.effective_user.id != ADMIN_ID:
         return
 
-    book_sheet, _ = get_sheets()
+    book_sheet, _, _ = get_sheets()
     if not book_sheet:
         await update.message.reply_text("❌ Sheet error")
         return
@@ -659,14 +855,17 @@ async def handle_admin_document(update: Update, context: ContextTypes.DEFAULT_TY
     book_name = derive_book_name_from_caption_or_filename(caption, file_name)
     file_id = update.message.document.file_id
 
-    result = await upsert_book(book_sheet, book_name, file_id)
+    result = await upsert_book(book_sheet, book_name, file_id, aliases_text=caption)
 
     if result == "updated":
         await update.message.reply_text(f"✅ বইটি আপডেট করা হয়েছে: {book_name}")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "UPDATED")
     elif result == "added":
         await update.message.reply_text(f"✅ বইটি আপলোড করা হয়েছে: {book_name}")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "ADDED")
     else:
         await update.message.reply_text("⚠️ আপলোড করা যায়নি")
+        await append_log("upload", ADMIN_ID, "admin", update.effective_chat.id, book_name, normalize(book_name), "ERROR")
 
 # ================= CALLBACK =================
 
@@ -702,12 +901,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
+            await append_log(
+                "suggestion_click",
+                query.from_user.id,
+                f"@{query.from_user.username}" if query.from_user and query.from_user.username else "",
+                query.message.chat.id,
+                selected_title,
+                normalize(selected_title),
+                "CLICKED",
+            )
+
             await process_book_search(
                 context=context,
                 chat_id=query.message.chat.id,
                 user_text_raw=selected_title,
                 user_id=query.from_user.id,
-                allow_gemini=False
+                username=f"@{query.from_user.username}" if query.from_user and query.from_user.username else "",
             )
             return
 
@@ -723,7 +932,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     Thread(target=run_web, daemon=True).start()
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -739,6 +948,9 @@ def main():
 
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("Stats", stats))
+
+    app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("Logs", logs_command))
 
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_admin_document))
