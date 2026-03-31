@@ -41,6 +41,7 @@ _cached_user_sheet = None
 _cached_log_sheet = None
 _callback_cache = {}
 _admin_reply_map = {}
+_chat_send_locks = {}
 
 BOOK_CACHE = {
     "ts": 0.0,
@@ -425,6 +426,13 @@ def make_inline_keyboard(titles):
 
 # ================= USER / ADMIN HELPERS =================
 
+def get_chat_lock(chat_id: int) -> asyncio.Lock:
+    lock = _chat_send_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _chat_send_locks[chat_id] = lock
+    return lock
+
 def extract_target_chat_id_from_admin_message(message_text: str):
     if not message_text:
         return None
@@ -446,38 +454,70 @@ async def ensure_user_saved(user_id, user_sheet):
     except Exception as e:
         logging.error(f"User save error: {e}")
 
-async def send_books_by_rows(context: ContextTypes.DEFAULT_TYPE, chat_id: int, rows):
+async def send_books_by_rows(bot, chat_id: int, rows, batch_size: int = 3, batch_pause: float = 0.3):
     sent = 0
     seen = set()
 
-    for row in rows:
-        if not row or len(row) < 2:
-            continue
+    async with get_chat_lock(chat_id):
+        for i, row in enumerate(rows, start=1):
+            if not row or len(row) < 2:
+                continue
 
-        book_name = str(row[0]).strip()
-        file_id = str(row[1]).strip()
+            book_name = str(row[0]).strip()
+            file_id = str(row[1]).strip()
 
-        if not book_name or not file_id:
-            continue
+            if not book_name or not file_id:
+                continue
 
-        key = (book_name, file_id)
-        if key in seen:
-            continue
-        seen.add(key)
+            key = (book_name, file_id)
+            if key in seen:
+                continue
+            seen.add(key)
 
-        try:
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=file_id,
-                caption=f"📘 {book_name}",
-            )
-            sent += 1
-        except BadRequest as e:
-            logging.error(f"Send document failed for {book_name}: {e}")
-        except Exception as e:
-            logging.error(f"Send document error for {book_name}: {e}")
+            try:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption=f"📘 {book_name}",
+                )
+                sent += 1
+            except BadRequest as e:
+                logging.error(f"Send document failed for {book_name}: {e}")
+            except Exception as e:
+                logging.error(f"Send document error for {book_name}: {e}")
+
+            if i % batch_size == 0:
+                await asyncio.sleep(batch_pause)
+            else:
+                await asyncio.sleep(0)
 
     return sent
+
+async def queue_book_delivery(context, chat_id: int, rows, user_id: int, username: str, query_text: str, normalized_query: str, note: str = ""):
+    if not rows:
+        await context.bot.send_message(chat_id=chat_id, text="❌ বই পাওয়া যায়নি")
+        return
+
+    total = len(rows)
+    if total == 1:
+        ack = "📚 বই পাওয়া গেছে, পাঠানো শুরু করছি..."
+    else:
+        ack = f"📚 {total}টি বই পাওয়া গেছে, পাঠানো শুরু করছি..."
+
+    await context.bot.send_message(chat_id=chat_id, text=ack)
+
+    context.application.create_task(
+        send_books_by_rows(
+            bot=context.bot,
+            chat_id=chat_id,
+            rows=rows,
+            batch_size=3,
+            batch_pause=0.3,
+        )
+    )
+
+    preview_title = str(rows[0][0]).strip() if rows and rows[0] else ""
+    await append_log("search", user_id, username, chat_id, query_text, normalized_query, "QUEUED", preview_title, note)
 
 async def upsert_book(book_sheet, book_name, file_id, aliases_text=""):
     try:
@@ -554,11 +594,17 @@ async def process_book_search(
         # 1) exact alias/title match
         if user_norm in lookup:
             matched_rows = lookup[user_norm]
-            sent = await send_books_by_rows(context, chat_id, matched_rows)
-            if sent > 0:
-                matched_title = str(matched_rows[0][0]).strip() if matched_rows else ""
-                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MATCH", matched_title, "alias/exact")
-                return
+            await queue_book_delivery(
+                context=context,
+                chat_id=chat_id,
+                rows=matched_rows,
+                user_id=user_id,
+                username=username,
+                query_text=user_text_raw,
+                normalized_query=user_norm,
+                note="alias/exact",
+            )
+            return
 
         # 2) partial contains match
         matched = []
@@ -567,11 +613,17 @@ async def process_book_search(
                 matched.append(row)
 
         if matched:
-            sent = await send_books_by_rows(context, chat_id, matched)
-            if sent > 0:
-                matched_title = str(matched[0][0]).strip() if matched else ""
-                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MATCH", matched_title, "partial")
-                return
+            await queue_book_delivery(
+                context=context,
+                chat_id=chat_id,
+                rows=matched,
+                user_id=user_id,
+                username=username,
+                query_text=user_text_raw,
+                normalized_query=user_norm,
+                note="partial",
+            )
+            return
 
         # 3) fuzzy suggestions
         close_keys = get_close_matches(user_norm, list(lookup.keys()), n=5, cutoff=0.72)
@@ -932,7 +984,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     Thread(target=run_web, daemon=True).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(16).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -960,3 +1012,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    
