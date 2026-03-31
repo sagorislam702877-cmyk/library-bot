@@ -2,5 +2,6 @@ python-telegram-bot
 gspread
 oauth2client
 flask
-google-generativeai
+
+
 
