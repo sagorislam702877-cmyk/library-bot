@@ -24,8 +24,8 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-BOT_TOKEN = 8762483955:AAFUGY6uMdMmgOEoKhvYDtoJpXG142Kz-1Y", "").strip()
-ADMIN_ID = int(os.environ.get("8596482199", "0"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB").strip()
 LOG_SHEET_NAME = os.environ.get("LOG_SHEET_NAME", "Logs").strip()
 
