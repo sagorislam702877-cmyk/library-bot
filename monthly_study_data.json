@@ -1,0 +1,519 @@
+{
+  "version": 1,
+  "generated_for": "telegram_library_bot",
+  "notes": "Sathi 2026 monthly study data. Add sodosso/kormi later in the same structure.",
+  "data": {
+    "sathi": {
+      "2026": {
+        "january": {
+          "monthly_topic": "ঈমান ও আক্বীদা এবং ইলমুল হাদীস",
+          "quran": [
+            "সূরা ইউসুফ (৫-১২ রুকু)",
+            "সূরা আত-তাকবীর",
+            "সূরা যিলযাল"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_JAN_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (৫ম খণ্ড) - কিতাবুল লিবাস",
+              "book_title_hint": "সহীহ আল বুখারী পঞ্চম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JAN_002",
+              "section": "literature",
+              "item_name": "হাদীসের পরিচয়",
+              "book_title_hint": "হাদীসের পরিচয়"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JAN_003",
+              "section": "literature",
+              "item_name": "ইসলামের হাকীকত",
+              "book_title_hint": "ইসলামের হাকীকত"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JAN_004",
+              "section": "class_topic",
+              "item_name": "পর্দা",
+              "book_title_hint": "পর্দার আসল রূপ"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JAN_005",
+              "section": "discussion_topic",
+              "item_name": "কর্মপদ্ধতি",
+              "book_title_hint": "কর্মপদ্ধতি"
+            }
+          ],
+          "memorize": [
+            "লক্ষ্য-উদ্দেশ্য",
+            "দাওয়াত"
+          ],
+          "dua": [
+            "আয়াতুল কুরসী",
+            "দুই সিজদার মাঝখানের দু’আসমূহ"
+          ]
+        },
+        "february": {
+          "monthly_topic": "ইসলামী আন্দোলন",
+          "quran": [
+            "সূরা লুকমান (২য় রুকু)",
+            "সূরা আল ফাতাহ",
+            "সূরা আল ওয়াকিয়া"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_FEB_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (১ম খণ্ড) - কিতাবুল ইলম",
+              "book_title_hint": "সহীহ আল বুখারী প্রথম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_FEB_002",
+              "section": "literature",
+              "item_name": "ইসলামী সমাজ বিপ্লবের ধারা",
+              "book_title_hint": "ইসলামী সমাজ বিপ্লবের ধারা"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_FEB_003",
+              "section": "class_topic",
+              "item_name": "আনুগত্য",
+              "book_title_hint": "আনুগত্য"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_FEB_004",
+              "section": "discussion_topic",
+              "item_name": "চরিত্র গঠনের মৌলিক উপাদান",
+              "book_title_hint": "চরিত্র গঠনের মৌলিক উপাদান"
+            }
+          ],
+          "memorize": [
+            "সংগঠন",
+            "প্রশিক্ষণ"
+          ],
+          "dua": [
+            "ফরজ নামাজ শেষে দু’আসমূহ"
+          ]
+        },
+        "march": {
+          "monthly_topic": "আত্মশুদ্ধি",
+          "quran": [
+            "সূরা মুনাফিকুন",
+            "সূরা আল-ফালাক",
+            "সূরা আন-নাস",
+            "সূরা নাসর",
+            "সূরা কদর",
+            "সূরা বাইয়্যিনাহ"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_MAR_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (১ম খণ্ড) - কিতাবুল ওযু",
+              "book_title_hint": "সহীহ আল বুখারী প্রথম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAR_002",
+              "section": "literature",
+              "item_name": "তাযকিয়াতুন নাফস",
+              "book_title_hint": "তাযকিয়াতুন নাফস"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAR_003",
+              "section": "class_topic",
+              "item_name": "তাকওয়া",
+              "book_title_hint": "তাকওয়া"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAR_004",
+              "section": "discussion_topic",
+              "item_name": "যাকাতের হাকীকত",
+              "book_title_hint": "যাকাতের হাকীকত"
+            }
+          ],
+          "memorize": [
+            "পর্দা",
+            "তাকওয়া ও সাওম"
+          ],
+          "dua": [
+            "সাইয়্যিদুল ইস্তিগফার",
+            "ইফতারের দু’আ"
+          ]
+        },
+        "april": {
+          "monthly_topic": "ইসলামী আন্দোলনের ইতিহাস",
+          "quran": [
+            "সূরা আর রূম (১ম রুকু)",
+            "সূরা আল-বুরুজ",
+            "সূরা আন নূর (১-৫ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_APR_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (১ম খণ্ড) - কিতাবুস সালাত",
+              "book_title_hint": "সহীহ আল বুখারী প্রথম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_APR_002",
+              "section": "literature",
+              "item_name": "মানবতার বন্ধু মুহাম্মাদুর রাসূলুল্লাহ (স)",
+              "book_title_hint": "মানবতার বন্ধু মুহাম্মাদুর রাসূলুল্লাহ"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_APR_003",
+              "section": "class_topic",
+              "item_name": "আখিরাত",
+              "book_title_hint": "আখিরাত"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_APR_004",
+              "section": "discussion_topic",
+              "item_name": "সংবিধান",
+              "book_title_hint": "সংবিধান"
+            }
+          ],
+          "memorize": [
+            "ইসলামী আন্দোলনের প্রয়োজনীয়তা",
+            "ইসলামী আন্দোলন না করার পরিণাম"
+          ],
+          "dua": [
+            "দু’আ কুনুত",
+            "বৈঠক শেষের দু’আ"
+          ]
+        },
+        "may": {
+          "monthly_topic": "দাওয়াত",
+          "quran": [
+            "সূরা আন নূর (৬-৯ রুকু)",
+            "সূরা ইয়াসীন"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_MAY_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (১ম খণ্ড) - কিতাবুত তাহাজ্জুদ",
+              "book_title_hint": "সহীহ আল বুখারী প্রথম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAY_002",
+              "section": "literature",
+              "item_name": "দাওয়াতে দ্বীন ও তার কর্মপন্থা",
+              "book_title_hint": "দাওয়াতে দ্বীন ও তার কর্মপন্থা"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAY_003",
+              "section": "class_topic",
+              "item_name": "দাওয়াত",
+              "book_title_hint": "দাওয়াত"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_MAY_004",
+              "section": "discussion_topic",
+              "item_name": "দায়ী ইলাল্লাহ ও দাওয়াত ইলাল্লাহ",
+              "book_title_hint": "দায়ী ইলাল্লাহ ও দাওয়াত ইলাল্লাহ"
+            }
+          ],
+          "memorize": [
+            "জান্নাত",
+            "জাহান্নাম"
+          ],
+          "dua": [
+            "ঘুমানোর আগে দু’আ",
+            "জাগ্রত হওয়ার দু’আ"
+          ]
+        },
+        "june": {
+          "monthly_topic": "ক্যারিয়ার ও দক্ষতা",
+          "quran": [
+            "সূরা আনফাল"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_JUN_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (১ম খণ্ড) - কিতাবুল জানাজা",
+              "book_title_hint": "সহীহ আল বুখারী প্রথম খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUN_002",
+              "section": "literature",
+              "item_name": "মুসলিম যুবসমাজের ক্যারিয়ার গঠন ও দক্ষতা উন্নয়ন",
+              "book_title_hint": "মুসলিম যুবসমাজের ক্যারিয়ার গঠন ও দক্ষতা উন্নয়ন"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUN_003",
+              "section": "class_topic",
+              "item_name": "সংগঠন",
+              "book_title_hint": "সংগঠন"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUN_004",
+              "section": "discussion_topic",
+              "item_name": "ইসলামী আন্দোলন : সাফল্যের শর্তাবলী",
+              "book_title_hint": "ইসলামী আন্দোলনের সাফল্যের শর্তাবলী"
+            }
+          ],
+          "memorize": [
+            "আনুগত্য",
+            "বাইয়াত"
+          ],
+          "dua": [
+            "অজু শুরুর দু’আ",
+            "অজু শেষের দু’আ"
+          ]
+        },
+        "july": {
+          "monthly_topic": "ইসলামী সমাজব্যবস্থা",
+          "quran": [
+            "সূরা হুজুরাত",
+            "সূরা মাউন",
+            "সূরা আল ফুরকান (১-৪ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_JUL_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (২য় খণ্ড) - কিতাবুজ জাকাত",
+              "book_title_hint": "সহীহ আল বুখারী দ্বিতীয় খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUL_002",
+              "section": "literature",
+              "item_name": "ইসলামের স্বর্ণযুগের সামাজিক ন্যায়নীতি",
+              "book_title_hint": "ইসলামের স্বর্ণযুগের সামাজিক ন্যায়নীতি"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUL_003",
+              "section": "class_topic",
+              "item_name": "শিষ্টাচার",
+              "book_title_hint": "শিষ্টাচার"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_JUL_004",
+              "section": "discussion_topic",
+              "item_name": "ইসলামী নেতৃত্বের গুণাবলী",
+              "book_title_hint": "ইসলামী নেতৃত্বের গুণাবলী"
+            }
+          ],
+          "memorize": [
+            "সালাত",
+            "যাকাত"
+          ],
+          "dua": [
+            "টয়লেটে প্রবেশের দু’আ",
+            "টয়লেট থেকে বের হওয়ার দু’আ"
+          ]
+        },
+        "august": {
+          "monthly_topic": "ইসলামী শিক্ষাব্যবস্থা",
+          "quran": [
+            "সূরা আল ফুরকান (৫-৭ রুকু)",
+            "সূরা আলাক",
+            "সূরা আ’রাফ (১ম-৪র্থ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_AUG_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (২য় খণ্ড) - কিতাবুস সাওম",
+              "book_title_hint": "সহীহ আল বুখারী দ্বিতীয় খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_AUG_002",
+              "section": "literature",
+              "item_name": "শিক্ষা সাহিত্য সংস্কৃতি (শিক্ষা অংশ)",
+              "book_title_hint": "শিক্ষা সাহিত্য সংস্কৃতি"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_AUG_003",
+              "section": "class_topic",
+              "item_name": "পিতা-মাতার প্রতি সন্তানের দায়িত্ব",
+              "book_title_hint": "মাতা পিতা ও সন্তানের অধিকার"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_AUG_004",
+              "section": "discussion_topic",
+              "item_name": "শিক্ষাব্যবস্থার ইসলামী রূপরেখা",
+              "book_title_hint": "শিক্ষাব্যবস্থার ইসলামী রূপরেখা"
+            }
+          ],
+          "memorize": [
+            "ইসলামী শিক্ষা আন্দোলন",
+            "ছাত্রসমস্যার সমাধান",
+            "ইসলামী সমাজ বিনির্মাণ"
+          ],
+          "dua": [
+            "ঘরে প্রবেশের দু’আ",
+            "ঘর থেকে বের হওয়ার দু’আ"
+          ]
+        },
+        "september": {
+          "monthly_topic": "সংগঠন",
+          "quran": [
+            "সূরা আল আম্বিয়া"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_SEP_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (২য় খণ্ড) - কিতাবুল বুয়ূ",
+              "book_title_hint": "সহীহ আল বুখারী দ্বিতীয় খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_SEP_002",
+              "section": "literature",
+              "item_name": "ইসলামী রাষ্ট্র কীভাবে প্রতিষ্ঠিত হয়",
+              "book_title_hint": "ইসলামী রাষ্ট্র কীভাবে প্রতিষ্ঠিত হয়"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_SEP_003",
+              "section": "class_topic",
+              "item_name": "সংগঠন",
+              "book_title_hint": "সংগঠন"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_SEP_004",
+              "section": "discussion_topic",
+              "item_name": "ইকামাতে দ্বীন",
+              "book_title_hint": "ইকামাতে দ্বীন"
+            }
+          ],
+          "memorize": [
+            "ত্যাগ-কুরবানি",
+            "শাহাদাত"
+          ],
+          "dua": [
+            "যানবাহনে ওঠার দু’আ",
+            "নৌযানে ওঠার দু’আ"
+          ]
+        },
+        "october": {
+          "monthly_topic": "ফিকহ",
+          "quran": [
+            "সূরা হাজ্জ (শেষ রুকু)",
+            "সূরা মুহাম্মদ",
+            "সূরা আলে ইমরান (১-৪ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_OCT_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (৩য় খণ্ড) - কিতাবুল জিহাদ",
+              "book_title_hint": "সহীহ আল বুখারী তৃতীয় খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_OCT_002",
+              "section": "literature",
+              "item_name": "আমি তাওবা করতে চাই কিন্তু",
+              "book_title_hint": "আমি তাওবা করতে চাই কিন্তু"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_OCT_003",
+              "section": "literature",
+              "item_name": "আসান ফিকাহ (১ম ও ২য় খণ্ড)",
+              "book_title_hint": "আসান ফিকাহ"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_OCT_004",
+              "section": "class_topic",
+              "item_name": "বাইয়াত",
+              "book_title_hint": "বাইয়াতের হাকীকত"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_OCT_005",
+              "section": "discussion_topic",
+              "item_name": "সত্যের সাক্ষ্য",
+              "book_title_hint": "সত্যের সাক্ষ্য"
+            }
+          ],
+          "memorize": [
+            "ঈমান",
+            "তাওহীদ"
+          ],
+          "dua": [
+            "সম্পদ বৃদ্ধি ও কল্যাণের দু’আ"
+          ]
+        },
+        "november": {
+          "monthly_topic": "ইসলামী সংস্কৃতি",
+          "quran": [
+            "সূরা আলে ইমরান (৫-১৪ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_NOV_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (৩য় খণ্ড) - কিতাবুল আম্বিয়া",
+              "book_title_hint": "সহীহ আল বুখারী তৃতীয় খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_NOV_002",
+              "section": "literature",
+              "item_name": "সাংস্কৃতিক আগ্রাসন ও বাংলাদেশ",
+              "book_title_hint": "সাংস্কৃতিক আগ্রাসন ও বাংলাদেশ"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_NOV_003",
+              "section": "class_topic",
+              "item_name": "তাজকিয়াতুন নফস",
+              "book_title_hint": "তাযকিয়াতুন নাফস"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_NOV_004",
+              "section": "discussion_topic",
+              "item_name": "আদর্শ কীভাবে প্রচার করতে হবে",
+              "book_title_hint": "আদর্শ কীভাবে প্রচার করতে হবে"
+            }
+          ],
+          "memorize": [
+            "আখিরাত",
+            "রিসালাত"
+          ],
+          "dua": [
+            "পোশাক পরিধান ও খোলার দু’আ"
+          ]
+        },
+        "december": {
+          "monthly_topic": "বাংলাদেশের ইতিহাস",
+          "quran": [
+            "সূরা আলে ইমরান (১৫-২০ রুকু)",
+            "সূরা ইউসুফ (১-৪ রুকু)"
+          ],
+          "items": [
+            {
+              "monthly_item_id": "MI_SA_2026_DEC_001",
+              "section": "hadith",
+              "item_name": "সহিহ আল বুখারী (৪র্থ খণ্ড) - কিতাবুল মাগাযী",
+              "book_title_hint": "সহীহ আল বুখারী চতুর্থ খণ্ড"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_DEC_002",
+              "section": "literature",
+              "item_name": "বাংলাদেশের রক্তের ঋণ",
+              "book_title_hint": "বাংলাদেশের রক্তের ঋণ"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_DEC_003",
+              "section": "class_topic",
+              "item_name": "ত্যাগ-কুরবানি",
+              "book_title_hint": "ত্যাগ কুরবানি"
+            },
+            {
+              "monthly_item_id": "MI_SA_2026_DEC_004",
+              "section": "discussion_topic",
+              "item_name": "পলাশী থেকে বাংলাদেশ",
+              "book_title_hint": "পলাশী থেকে বাংলাদেশ"
+            }
+          ],
+          "memorize": [
+            "নৈতিক চরিত্র",
+            "মুমিনের পারস্পরিক সম্পর্ক"
+          ],
+          "dua": [
+            "নবীদের খাস দু’আ"
+          ]
+        }
+      }
+    }
+  }
+}
