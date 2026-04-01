@@ -869,6 +869,9 @@ async def post_init(application: Application):
 def main():
     Thread(target=run_web, daemon=True).start()
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -889,7 +892,3 @@ def main():
     app.add_error_handler(handle_error)
 
     app.run_polling(drop_pending_updates=True)
-
-
-if __name__ == "__main__":
-    main()
