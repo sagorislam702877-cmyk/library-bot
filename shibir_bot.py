@@ -231,7 +231,6 @@ async def cleanup_callback_cache_periodically():
 
 # ================= CACHE HELPERS =================
 
-
 def invalidate_book_cache():
     BOOK_CACHE["ts"] = 0.0
 
@@ -279,8 +278,6 @@ async def load_users_initial():
         USER_CACHE["ts"] = time.time()
     except Exception as e:
         logging.error(f"User load error: {e}")
-        
-(context.bot, chat_id, rows))
 
 
 # ================= TEXT UTIL =================
