@@ -866,11 +866,14 @@ async def post_init(application: Application):
 # ================= MAIN RUNNER =================
 
 
-async def main_async():
+def main():
+    Thread(target=run_web, daemon=True).start()
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)
         .concurrent_updates(100)
+        .post_init(post_init)
         .build()
     )
 
@@ -885,21 +888,7 @@ async def main_async():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_error_handler(handle_error)
 
-    await startup_task(app)
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
-
-
-def main():
-    asyncio.run(main_async())
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
