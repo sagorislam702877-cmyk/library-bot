@@ -7,16 +7,18 @@ import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from threading import Thread
 from difflib import get_close_matches
+from html import escape
+from threading import Thread
 from typing import Any
+from urllib.parse import quote
 
 import gspread
 from flask import Flask
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest, RetryAfter, TimedOut, NetworkError, Forbidden
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -31,43 +33,54 @@ from telegram.ext import (
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
 SHEET_NAME = os.environ.get("SHEET_NAME", "MyBotDB").strip()
 BOOK_SHEET_NAME = os.environ.get("BOOK_SHEET_NAME", "Sheet1").strip()
 USER_SHEET_NAME = os.environ.get("USER_SHEET_NAME", "Users").strip()
 LOG_SHEET_NAME = os.environ.get("LOG_SHEET_NAME", "Logs").strip()
+MONTHLY_OVERVIEW_SHEET_NAME = os.environ.get("MONTHLY_OVERVIEW_SHEET_NAME", "MonthlyOverview").strip()
+MONTHLY_ITEM_SHEET_NAME = os.environ.get("MONTHLY_ITEM_SHEET_NAME", "MonthlyItems").strip()
 PORT = int(os.environ.get("PORT", "8080"))
 
-# কতগুলো worker একসাথে ডেলিভারি পাঠাবে
 DELIVERY_WORKERS = int(os.environ.get("DELIVERY_WORKERS", "8"))
-# একসাথে এক ইউজারকে কতো ফাইল ব্যাচে পাঠাবে
 SEND_BATCH_SIZE = int(os.environ.get("SEND_BATCH_SIZE", "2"))
-# ব্যাচের মাঝে গ্যাপ
 SEND_BATCH_PAUSE = float(os.environ.get("SEND_BATCH_PAUSE", "0.20"))
-# প্রতিটি ডকুমেন্ট পাঠানোর মাঝে গ্যাপ
 SEND_ITEM_PAUSE = float(os.environ.get("SEND_ITEM_PAUSE", "0.03"))
-# cache TTL
 BOOK_CACHE_TTL = int(os.environ.get("BOOK_CACHE_TTL", "300"))
+MONTHLY_CACHE_TTL = int(os.environ.get("MONTHLY_CACHE_TTL", "300"))
+DEFAULT_YEAR = os.environ.get("DEFAULT_MONTHLY_YEAR", "2026").strip() or "2026"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
 if ADMIN_ID == 0:
     raise RuntimeError("ADMIN_ID is missing or invalid")
 
-# ================= FLASK (Render Keep-Alive) =================
+MONTH_ORDER = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+]
+MONTH_BN = {
+    "january": "জানুয়ারি", "february": "ফেব্রুয়ারি", "march": "মার্চ", "april": "এপ্রিল",
+    "may": "মে", "june": "জুন", "july": "জুলাই", "august": "আগস্ট",
+    "september": "সেপ্টেম্বর", "october": "অক্টোবর", "november": "নভেম্বর", "december": "ডিসেম্বর",
+}
+CATEGORY_BN = {"kormi": "কর্মী", "sathi": "সাথী", "sodosso": "সদস্য"}
+SECTION_ORDER = ["hadith", "literature", "class_topic", "discussion_topic"]
+
+# ================= FLASK =================
 
 web_app = Flask(__name__)
 
 
 @web_app.route("/")
 def home():
-    return "Library Bot is Ultra Optimized and Running!"
+    return "Library Bot + Monthly Study is Running!"
 
 
 def run_web():
     import logging as flask_logging
 
-    log = flask_logging.getLogger("werkzeug")
-    log.setLevel(flask_logging.ERROR)
+    flask_logging.getLogger("werkzeug").setLevel(flask_logging.ERROR)
     web_app.run(host="0.0.0.0", port=PORT, use_reloader=False)
 
 
@@ -84,6 +97,8 @@ logger = logging.getLogger(__name__)
 _cached_book_sheet = None
 _cached_user_sheet = None
 _cached_log_sheet = None
+_cached_monthly_overview_sheet = None
+_cached_monthly_item_sheet = None
 _gspread_client = None
 _callback_cache: dict[str, list[str]] = {}
 _admin_reply_map: dict[int, int] = {}
@@ -97,15 +112,17 @@ BOOK_CACHE = {
     "indexed": [],
     "titles": [],
     "lookup": {},
+    "by_book_id": {},
 }
 
-USER_CACHE = {
+MONTHLY_CACHE = {
     "ts": 0.0,
-    "ids": set(),
+    "overview_lookup": {},
+    "items_by_month": {},
+    "items_by_id": {},
 }
 
-# এক ইউজারের মেসেজ পাঠানো যেন তার নিজের চ্যাটে serial থাকে,
-# কিন্তু অন্য ইউজারকে যেন ব্লক না করে
+USER_CACHE = {"ts": 0.0, "ids": set()}
 CHAT_SEND_LOCKS: dict[int, asyncio.Lock] = {}
 ACTIVE_DELIVERIES: dict[int, str] = {}
 
@@ -121,7 +138,6 @@ class DeliveryTask:
     note: str = ""
 
 
-# per-chat queue + fair scheduler
 DELIVERY_QUEUE_BY_CHAT: dict[int, deque[DeliveryTask]] = defaultdict(deque)
 READY_CHAT_IDS: asyncio.Queue[int] | None = None
 READY_CHAT_SET: set[int] = set()
@@ -131,10 +147,23 @@ SCHEDULER_LOCK: asyncio.Lock | None = None
 # ================= SHEETS CONNECTION =================
 
 def get_sheets():
-    global _cached_book_sheet, _cached_user_sheet, _cached_log_sheet, _gspread_client
+    global _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
+    global _cached_monthly_overview_sheet, _cached_monthly_item_sheet, _gspread_client
 
-    if _cached_book_sheet and _cached_user_sheet and _cached_log_sheet:
-        return _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
+    if (
+        _cached_book_sheet
+        and _cached_user_sheet
+        and _cached_log_sheet
+        and _cached_monthly_overview_sheet
+        and _cached_monthly_item_sheet
+    ):
+        return (
+            _cached_book_sheet,
+            _cached_user_sheet,
+            _cached_log_sheet,
+            _cached_monthly_overview_sheet,
+            _cached_monthly_item_sheet,
+        )
 
     try:
         scope = [
@@ -143,8 +172,8 @@ def get_sheets():
         ]
         creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
         _gspread_client = gspread.authorize(creds)
-
         spreadsheet = _gspread_client.open(SHEET_NAME)
+
         _cached_book_sheet = spreadsheet.worksheet(BOOK_SHEET_NAME)
         _cached_user_sheet = spreadsheet.worksheet(USER_SHEET_NAME)
 
@@ -152,17 +181,43 @@ def get_sheets():
             _cached_log_sheet = spreadsheet.worksheet(LOG_SHEET_NAME)
         except Exception:
             _cached_log_sheet = spreadsheet.add_worksheet(title=LOG_SHEET_NAME, rows=5000, cols=10)
-            _cached_log_sheet.append_row(
-                [
-                    "timestamp", "event", "user_id", "username", "chat_id",
-                    "query", "normalized_query", "status", "matched_title", "note",
-                ]
-            )
+            _cached_log_sheet.append_row([
+                "timestamp", "event", "user_id", "username", "chat_id",
+                "query", "normalized_query", "status", "matched_title", "note",
+            ])
 
-        return _cached_book_sheet, _cached_user_sheet, _cached_log_sheet
+        try:
+            _cached_monthly_overview_sheet = spreadsheet.worksheet(MONTHLY_OVERVIEW_SHEET_NAME)
+        except Exception:
+            _cached_monthly_overview_sheet = spreadsheet.add_worksheet(
+                title=MONTHLY_OVERVIEW_SHEET_NAME, rows=1000, cols=20
+            )
+            _cached_monthly_overview_sheet.append_row([
+                "category", "year", "month", "monthly_topic", "quran", "hadith",
+                "literature", "class_topic", "discussion_topic", "memorize", "dua",
+            ])
+
+        try:
+            _cached_monthly_item_sheet = spreadsheet.worksheet(MONTHLY_ITEM_SHEET_NAME)
+        except Exception:
+            _cached_monthly_item_sheet = spreadsheet.add_worksheet(
+                title=MONTHLY_ITEM_SHEET_NAME, rows=5000, cols=20
+            )
+            _cached_monthly_item_sheet.append_row([
+                "monthly_item_id", "category", "year", "month", "section",
+                "item_name", "book_id", "book_title_hint",
+            ])
+
+        return (
+            _cached_book_sheet,
+            _cached_user_sheet,
+            _cached_log_sheet,
+            _cached_monthly_overview_sheet,
+            _cached_monthly_item_sheet,
+        )
     except Exception as e:
         logger.exception("Google Sheet Auth Error: %s", e)
-        return None, None, None
+        return None, None, None, None, None
 
 
 # ================= TEXT UTIL =================
@@ -184,12 +239,35 @@ def clean_title_like_text(text: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def is_url_like(text: Any) -> bool:
-    return bool(re.search(r"(https?://|www\.|t\.me/|telegram\.me/)", str(text), flags=re.I))
+def normalize_month(text: Any) -> str:
+    t = normalize(text)
+    mapping = {
+        "jan": "january", "january": "january", "জানুয়ারি": "january", "জানুয়ারি": "january",
+        "feb": "february", "february": "february", "ফেব্রুয়ারি": "february", "ফেব্রুয়ারি": "february",
+        "mar": "march", "march": "march", "মার্চ": "march",
+        "apr": "april", "april": "april", "এপ্রিল": "april",
+        "may": "may", "মে": "may",
+        "jun": "june", "june": "june", "জুন": "june",
+        "jul": "july", "july": "july", "জুলাই": "july",
+        "aug": "august", "august": "august", "আগস্ট": "august",
+        "sep": "september", "sept": "september", "september": "september", "সেপ্টেম্বর": "september",
+        "oct": "october", "october": "october", "অক্টোবর": "october",
+        "nov": "november", "november": "november", "নভেম্বর": "november",
+        "dec": "december", "december": "december", "ডিসেম্বর": "december",
+    }
+    return mapping.get(t, t)
 
 
-def remove_urls(text: Any) -> str:
-    return re.sub(r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+)", "", str(text), flags=re.I)
+def month_to_bn(month_key: str) -> str:
+    return MONTH_BN.get(normalize_month(month_key), str(month_key))
+
+
+def split_list_text(raw: str) -> list[str]:
+    if not raw:
+        return []
+    raw = raw.replace("•", "\n")
+    parts = re.split(r"\n|;|\|", raw)
+    return [clean_title_like_text(x) for x in parts if clean_title_like_text(x)]
 
 
 # ================= AUTO ALIAS GENERATION =================
@@ -260,6 +338,7 @@ def build_search_index(rows: list[list[str]]):
     lookup: dict[str, list[list[str]]] = {}
     titles: list[str] = []
     indexed: list[tuple[list[str], str]] = []
+    by_book_id: dict[str, list[str]] = {}
 
     for row in rows:
         if not row or len(row) < 2:
@@ -272,6 +351,10 @@ def build_search_index(rows: list[list[str]]):
         titles.append(title)
         indexed.append((row, title_norm))
 
+        book_id = str(row[3]).strip() if len(row) >= 4 else ""
+        if book_id:
+            by_book_id[book_id] = row
+
         aliases = {title_norm}
         aliases.update(generate_auto_aliases(title))
         if len(row) >= 3:
@@ -281,7 +364,7 @@ def build_search_index(rows: list[list[str]]):
             if alias:
                 lookup.setdefault(alias, []).append(row)
 
-    return indexed, titles, lookup
+    return indexed, titles, lookup, by_book_id
 
 
 # ================= CACHE =================
@@ -290,34 +373,147 @@ def invalidate_book_cache():
     BOOK_CACHE["ts"] = 0.0
 
 
+def invalidate_monthly_cache():
+    MONTHLY_CACHE["ts"] = 0.0
+
+
 async def get_book_cache(force: bool = False):
     now = time.time()
     if (not force) and BOOK_CACHE["rows"] and (now - BOOK_CACHE["ts"] < BOOK_CACHE_TTL):
-        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"], BOOK_CACHE["lookup"]
+        return (
+            BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"],
+            BOOK_CACHE["lookup"], BOOK_CACHE["by_book_id"],
+        )
 
-    book_sheet, _, _ = get_sheets()
+    book_sheet, _, _, _, _ = get_sheets()
     if not book_sheet:
-        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"], BOOK_CACHE["lookup"]
+        return (
+            BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"],
+            BOOK_CACHE["lookup"], BOOK_CACHE["by_book_id"],
+        )
 
     try:
         values = await asyncio.to_thread(book_sheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
         rows = [r for r in rows if r and len(r) >= 2 and str(r[0]).strip() and str(r[1]).strip()]
-        indexed, titles, lookup = build_search_index(rows)
-
-        BOOK_CACHE["rows"] = rows
-        BOOK_CACHE["indexed"] = indexed
-        BOOK_CACHE["titles"] = titles
-        BOOK_CACHE["lookup"] = lookup
-        BOOK_CACHE["ts"] = now
-        return rows, indexed, titles, lookup
+        indexed, titles, lookup, by_book_id = build_search_index(rows)
+        BOOK_CACHE.update({
+            "ts": now,
+            "rows": rows,
+            "indexed": indexed,
+            "titles": titles,
+            "lookup": lookup,
+            "by_book_id": by_book_id,
+        })
+        return rows, indexed, titles, lookup, by_book_id
     except Exception as e:
         logger.exception("Book cache load error: %s", e)
-        return BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"], BOOK_CACHE["lookup"]
+        return (
+            BOOK_CACHE["rows"], BOOK_CACHE["indexed"], BOOK_CACHE["titles"],
+            BOOK_CACHE["lookup"], BOOK_CACHE["by_book_id"],
+        )
+
+
+async def get_monthly_cache(force: bool = False):
+    now = time.time()
+    if (not force) and MONTHLY_CACHE["overview_lookup"] and (now - MONTHLY_CACHE["ts"] < MONTHLY_CACHE_TTL):
+        return (
+            MONTHLY_CACHE["overview_lookup"],
+            MONTHLY_CACHE["items_by_month"],
+            MONTHLY_CACHE["items_by_id"],
+        )
+
+    _, _, _, overview_sheet, item_sheet = get_sheets()
+    if not overview_sheet or not item_sheet:
+        return (
+            MONTHLY_CACHE["overview_lookup"],
+            MONTHLY_CACHE["items_by_month"],
+            MONTHLY_CACHE["items_by_id"],
+        )
+
+    try:
+        overview_values = await asyncio.to_thread(overview_sheet.get_all_values)
+        item_values = await asyncio.to_thread(item_sheet.get_all_values)
+
+        overview_rows = overview_values[1:] if len(overview_values) > 1 else []
+        item_rows = item_values[1:] if len(item_values) > 1 else []
+
+        overview_lookup: dict[tuple[str, str, str], dict[str, str]] = {}
+        items_by_month: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+        items_by_id: dict[str, dict[str, str]] = {}
+
+        for row in overview_rows:
+            row = row + [""] * (11 - len(row))
+            category = normalize(row[0])
+            year = str(row[1]).strip()
+            month = normalize_month(row[2])
+            if not category or not year or not month:
+                continue
+            overview_lookup[(category, year, month)] = {
+                "category": category,
+                "year": year,
+                "month": month,
+                "monthly_topic": row[3].strip(),
+                "quran": row[4].strip(),
+                "hadith": row[5].strip(),
+                "literature": row[6].strip(),
+                "class_topic": row[7].strip(),
+                "discussion_topic": row[8].strip(),
+                "memorize": row[9].strip(),
+                "dua": row[10].strip(),
+            }
+
+        for row in item_rows:
+            row = row + [""] * (8 - len(row))
+            if len(row) < 6:
+                continue
+            item_id = str(row[0]).strip()
+            category = normalize(row[1])
+            year = str(row[2]).strip()
+            month = normalize_month(row[3])
+            section = normalize(row[4])
+            item_name = row[5].strip()
+            book_id = row[6].strip()
+            title_hint = row[7].strip()
+            if not item_id or not category or not year or not month or not section or not item_name:
+                continue
+            item = {
+                "monthly_item_id": item_id,
+                "category": category,
+                "year": year,
+                "month": month,
+                "section": section,
+                "item_name": item_name,
+                "book_id": book_id,
+                "book_title_hint": title_hint,
+            }
+            items_by_month[(category, year, month)].append(item)
+            items_by_id[item_id] = item
+
+        for key in list(items_by_month.keys()):
+            items_by_month[key] = sorted(
+                items_by_month[key],
+                key=lambda x: (SECTION_ORDER.index(x["section"]) if x["section"] in SECTION_ORDER else 99, x["item_name"]),
+            )
+
+        MONTHLY_CACHE.update({
+            "ts": now,
+            "overview_lookup": overview_lookup,
+            "items_by_month": dict(items_by_month),
+            "items_by_id": items_by_id,
+        })
+        return overview_lookup, dict(items_by_month), items_by_id
+    except Exception as e:
+        logger.exception("Monthly cache load error: %s", e)
+        return (
+            MONTHLY_CACHE["overview_lookup"],
+            MONTHLY_CACHE["items_by_month"],
+            MONTHLY_CACHE["items_by_id"],
+        )
 
 
 async def load_users_initial():
-    _, user_sheet, _ = get_sheets()
+    _, user_sheet, _, _, _ = get_sheets()
     if not user_sheet:
         return
     try:
@@ -333,19 +529,12 @@ async def load_users_initial():
 # ================= ASYNC LOGS & USERS =================
 
 async def append_log(event, user_id, username, chat_id, query, normalized_query, status, matched_title="", note=""):
-    row = [
+    LOG_QUEUE.append([
         time.strftime("%Y-%m-%d %H:%M:%S"),
-        str(event or ""),
-        str(user_id or ""),
-        str(username or ""),
-        str(chat_id or ""),
-        str(query or ""),
-        str(normalized_query or ""),
-        str(status or ""),
-        str(matched_title or ""),
-        str(note or ""),
-    ]
-    LOG_QUEUE.append(row)
+        str(event or ""), str(user_id or ""), str(username or ""), str(chat_id or ""),
+        str(query or ""), str(normalized_query or ""), str(status or ""),
+        str(matched_title or ""), str(note or ""),
+    ])
 
 
 async def ensure_user_saved(user_id: int):
@@ -357,7 +546,7 @@ async def ensure_user_saved(user_id: int):
 async def background_sync_task():
     while True:
         await asyncio.sleep(10)
-        _, user_sheet, log_sheet = get_sheets()
+        _, user_sheet, log_sheet, _, _ = get_sheets()
         if not user_sheet or not log_sheet:
             continue
 
@@ -388,8 +577,46 @@ def make_inline_keyboard(titles: list[str]):
     token = str(time.time_ns())[-10:]
     titles = titles[:10]
     _callback_cache[token] = titles
-    keyboard = [[InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")] for i, title in enumerate(titles)]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, callback_data=f"pick|{token}|{i}")] for i, title in enumerate(titles)])
+
+
+def monthly_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📚 মাসিক পড়াশোনা", callback_data="ms|home")]])
+
+
+def monthly_category_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👨‍💼 কর্মী", callback_data="ms|cat|kormi"), InlineKeyboardButton("🤝 সাথী", callback_data="ms|cat|sathi")],
+        [InlineKeyboardButton("🧑‍🎓 সদস্য", callback_data="ms|cat|sodosso")],
+        [InlineKeyboardButton("🔙 ফিরে যান", callback_data="ms|back|root")],
+    ])
+
+
+def monthly_month_keyboard(category: str, year: str = DEFAULT_YEAR) -> InlineKeyboardMarkup:
+    rows = []
+    current = []
+    for month in MONTH_ORDER:
+        current.append(InlineKeyboardButton(month_to_bn(month), callback_data=f"ms|month|{category}|{year}|{month}"))
+        if len(current) == 2:
+            rows.append(current)
+            current = []
+    if current:
+        rows.append(current)
+    rows.append([InlineKeyboardButton("🔙 ক্যাটাগরি", callback_data="ms|home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def monthly_pdf_keyboard(category: str, year: str, month: str, items: list[dict[str, str]]) -> InlineKeyboardMarkup:
+    rows = []
+    for item in items:
+        item_id = item.get("monthly_item_id", "")
+        title = item.get("item_name", "")
+        if not item_id or not title:
+            continue
+        short_title = title if len(title) <= 52 else title[:49] + "..."
+        rows.append([InlineKeyboardButton(f"📘 {short_title}", callback_data=f"ms|pdf|{item_id}")])
+    rows.append([InlineKeyboardButton("🔙 মাসে ফিরে যান", callback_data=f"ms|month|{category}|{year}|{month}")])
+    return InlineKeyboardMarkup(rows)
 
 
 # ================= DELIVERY ENGINE =================
@@ -448,7 +675,6 @@ async def send_books_by_rows(bot, chat_id: int, rows: list[list[str]], batch_siz
         for i, row in enumerate(rows, start=1):
             if not row or len(row) < 2:
                 continue
-
             book_name = str(row[0]).strip()
             file_id = str(row[1]).strip()
             if not book_name or not file_id:
@@ -496,7 +722,6 @@ async def delivery_worker(app: Application, worker_no: int):
 
             ACTIVE_DELIVERIES[chat_id] = task.query_text
             preview_title = str(task.rows[0][0]).strip() if task.rows and task.rows[0] else ""
-
             sent = await send_books_by_rows(app.bot, chat_id, task.rows)
             status = "DELIVERED" if sent else "FAILED"
             note = task.note or f"requested={len(task.rows)}, sent={sent}"
@@ -513,28 +738,18 @@ async def queue_book_delivery(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     ack = "📚 বই পাওয়া গেছে, পাঠানো শুরু করছি..." if total == 1 else f"📚 {total}টি বই পাওয়া গেছে, পাঠানো শুরু করছি..."
     await context.bot.send_message(chat_id=chat_id, text=ack)
 
-    task = DeliveryTask(
-        chat_id=chat_id,
-        user_id=user_id,
-        username=username,
-        query_text=query_text,
-        normalized_query=normalized_query,
-        rows=list(rows),
-        note=note,
-    )
+    task = DeliveryTask(chat_id, user_id, username, query_text, normalized_query, list(rows), note)
     await schedule_delivery(task)
-
     preview_title = str(rows[0][0]).strip() if rows and rows[0] else ""
     await append_log("search", user_id, username, chat_id, query_text, normalized_query, "QUEUED", preview_title, note)
 
 
-# ================= SEARCH LOGIC =================
+# ================= BOOK SEARCH =================
 
 async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_text_raw: str, user_id: int, username: str = ""):
     await ensure_user_saved(user_id)
-
     try:
-        rows, indexed_data, _book_names, lookup = await get_book_cache()
+        rows, indexed_data, _titles, lookup, _by_id = await get_book_cache()
         if not rows:
             await context.bot.send_message(chat_id=chat_id, text="❌ ডাটাবেসে কোনো বই নেই বা লোড হচ্ছে।")
             return
@@ -547,12 +762,10 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         matched: list[list[str]] = []
         match_type = ""
 
-        # 1) exact alias match
         if user_norm in lookup:
             matched = lookup[user_norm]
             match_type = "exact"
         else:
-            # 2) partial match
             matched = [row for row, title_norm in indexed_data if user_norm in title_norm or title_norm in user_norm]
             match_type = "partial"
 
@@ -591,7 +804,6 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
             await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "TOO_MANY_MATCHES", suggestions[0] if suggestions else "")
             return
 
-        # 3) fuzzy suggestions
         close_keys = get_close_matches(user_norm, list(lookup.keys()), n=5, cutoff=0.72)
         if close_keys:
             suggestions = []
@@ -606,20 +818,153 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
                     break
 
             if suggestions:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="🤖 আমি কয়েকটা সম্ভাব্য বই খুঁজে পেয়েছি:",
-                    reply_markup=make_inline_keyboard(suggestions),
-                )
+                await context.bot.send_message(chat_id=chat_id, text="🤖 আমি কয়েকটা সম্ভাব্য বই খুঁজে পেয়েছি:", reply_markup=make_inline_keyboard(suggestions))
                 await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "SUGGESTION", suggestions[0])
                 return
 
         await context.bot.send_message(chat_id=chat_id, text="❌ বইটি খুঁজে পাওয়া যাচ্ছে না")
         await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MISS")
-
     except Exception as e:
         logger.exception("Search error: %s", e)
         await context.bot.send_message(chat_id=chat_id, text="⚠️ সার্ভারে সমস্যা হয়েছে। একটু পর চেষ্টা করুন।")
+
+
+# ================= MONTHLY STUDY =================
+
+def build_deep_link(monthly_item_id: str) -> str:
+    if not BOT_USERNAME or not monthly_item_id:
+        return ""
+    return f"https://t.me/{BOT_USERNAME}?start={quote('mi_' + monthly_item_id)}"
+
+
+async def resolve_book_row_from_monthly_item(item: dict[str, str]) -> list[str] | None:
+    rows, indexed_data, _titles, lookup, by_book_id = await get_book_cache()
+    book_id = item.get("book_id", "").strip()
+    if book_id and book_id in by_book_id:
+        return by_book_id[book_id]
+
+    candidates = [item.get("item_name", ""), item.get("book_title_hint", "")]
+    for cand in candidates:
+        cand_norm = normalize(cand)
+        if not cand_norm:
+            continue
+        if cand_norm in lookup and lookup[cand_norm]:
+            return lookup[cand_norm][0]
+        for row, title_norm in indexed_data:
+            if cand_norm in title_norm or title_norm in cand_norm:
+                return row
+    return None
+
+
+def format_plain_bullets(raw: str) -> str:
+    parts = split_list_text(raw)
+    if not parts:
+        return "• নেই"
+    return "\n".join(f"• {escape(x)}" for x in parts)
+
+
+def format_linked_items(items: list[dict[str, str]]) -> str:
+    if not items:
+        return "• নেই"
+    lines = []
+    for item in items:
+        title = escape(item.get("item_name", ""))
+        link = build_deep_link(item.get("monthly_item_id", ""))
+        if link:
+            lines.append(f"• <a href=\"{link}\">{title}</a>")
+        else:
+            lines.append(f"• {title}")
+    return "\n".join(lines)
+
+
+async def build_monthly_message_html(category: str, year: str, month: str) -> tuple[str, list[dict[str, str]]]:
+    overview_lookup, items_by_month, _items_by_id = await get_monthly_cache()
+    key = (normalize(category), str(year).strip(), normalize_month(month))
+    overview = overview_lookup.get(key)
+    items = items_by_month.get(key, [])
+
+    if not overview:
+        return "", []
+
+    by_section: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for item in items:
+        by_section[item.get("section", "")].append(item)
+
+    bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
+    bot_footer = f'🤖 <a href="{bot_link}">{escape(BOT_USERNAME)}</a>' if bot_link else ""
+    category_bn = CATEGORY_BN.get(normalize(category), category)
+    month_bn = month_to_bn(month)
+
+    lines = [
+        f"<b>🌙 {escape(category_bn)}দের মাসিক পড়াশোনা | {escape(str(year))}</b>",
+        f"<b>📅 মাস:</b> {escape(month_bn)}",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>🟢 মাসিক বিষয়</b>",
+        escape(overview.get("monthly_topic", "") or "নেই"),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>📖 মাসিক অধ্যয়ন</b>",
+        "",
+        "<b>🕋 কুরআন:</b>",
+        format_plain_bullets(overview.get("quran", "")),
+        "",
+        "<b>📚 হাদীস:</b>",
+        format_linked_items(by_section.get("hadith", [])) if by_section.get("hadith") else format_plain_bullets(overview.get("hadith", "")),
+        "",
+        "<b>📘 সাহিত্য:</b>",
+        format_linked_items(by_section.get("literature", [])) if by_section.get("literature") else format_plain_bullets(overview.get("literature", "")),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>🎓 কুরআন/হাদীস ক্লাসের পড়া</b>",
+        format_linked_items(by_section.get("class_topic", [])) if by_section.get("class_topic") else format_plain_bullets(overview.get("class_topic", "")),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>👥 পাঠচক্র / আলোচনা চক্রের পড়া</b>",
+        format_linked_items(by_section.get("discussion_topic", [])) if by_section.get("discussion_topic") else format_plain_bullets(overview.get("discussion_topic", "")),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>🧠 আয়াত-হাদীস মুখস্থ</b>",
+        format_plain_bullets(overview.get("memorize", "")),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>🤲 মাসনূন দোয়া</b>",
+        format_plain_bullets(overview.get("dua", "")),
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "📥 যদি PDF চাও, তাহলে বইগুলোর নামের উপর ক্লিক করো।",
+    ]
+    if bot_footer:
+        lines.extend(["", bot_footer])
+    return "\n".join(lines), items
+
+
+async def send_monthly_overview_message(message_target, category: str, year: str, month: str, target_item_id: str = ""):
+    html, items = await build_monthly_message_html(category, year, month)
+    if not html:
+        await message_target.reply_text("⚠️ এই মাসের মাসিক পড়াশোনার তথ্য এখনও যোগ করা হয়নি।")
+        return
+
+    extra = ""
+    if target_item_id:
+        _overview_lookup, _items_by_month, items_by_id = await get_monthly_cache()
+        target_item = items_by_id.get(target_item_id)
+        if target_item:
+            extra = f"\n\n📌 আপনি <b>{escape(target_item.get('item_name', ''))}</b> বইটির জন্য এসেছেন।\nPDF চাইলে নিচের বাটনে ক্লিক করুন।"
+
+    await message_target.reply_text(
+        html + extra,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=monthly_pdf_keyboard(category, year, month, items),
+    )
 
 
 # ================= COMMANDS =================
@@ -628,9 +973,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user:
         await ensure_user_saved(user.id)
+
+    payload = context.args[0].strip() if context.args else ""
+    if payload.startswith("mi_"):
+        item_id = payload[3:]
+        overview_lookup, _items_by_month, items_by_id = await get_monthly_cache()
+        item = items_by_id.get(item_id)
+        if item:
+            await send_monthly_overview_message(
+                update.message,
+                item["category"],
+                item["year"],
+                item["month"],
+                target_item_id=item_id,
+            )
+            await append_log("monthly_deeplink", user.id if user else 0, f"@{user.username}" if user and user.username else "", update.effective_chat.id, item_id, item_id, "OPEN")
+            return
+
     await update.message.reply_text(
-        "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নামটি লিখুন।\n"
-        "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সট লিখুন"
+        "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম।\n\n"
+        "আপনার প্রয়োজনীয় বইয়ের নাম লিখুন।\n"
+        "মাসিক পড়াশোনা দেখতে নিচের বাটনে ক্লিক করুন।\n"
+        "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সট লিখুন",
+        reply_markup=monthly_main_keyboard(),
     )
 
 
@@ -638,8 +1003,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "বট ব্যবহারের নিয়মাবলী:\n\n"
         "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
-        "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
+        "২. মাসিক পড়াশোনা: /monthly লিখুন বা Start-এর বাটন চাপুন।\n"
+        "৩. এডমিন: /admin লিখে আপনার কথা লিখুন।\n"
         "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন"
+    )
+
+
+async def monthly_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📚 মাসিক পড়াশোনা দেখতে ক্যাটাগরি নির্বাচন করুন:",
+        reply_markup=monthly_category_keyboard(),
     )
 
 
@@ -647,7 +1020,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     parts = text.split(maxsplit=1)
     body = parts[1].strip() if len(parts) > 1 else ""
-
     if not body:
         await update.message.reply_text("ব্যবহার: /admin আপনার মেসেজ")
         return
@@ -673,14 +1045,12 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-
     text = update.message.text or ""
     parts = text.split(maxsplit=1)
     broadcast_text = parts[1].strip() if len(parts) > 1 else ""
 
     if not broadcast_text and update.message.reply_to_message:
         broadcast_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
-
     if not broadcast_text:
         await update.message.reply_text("ব্যবহার: /broadcast আপনার মেসেজ")
         return
@@ -696,10 +1066,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.05)
             except Exception:
                 failed += 1
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"✅ Broadcast শেষ\nসফল: {success}\nব্যর্থ: {failed}",
-        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Broadcast শেষ\nসফল: {success}\nব্যর্থ: {failed}")
 
     context.application.create_task(run_broadcast())
 
@@ -708,7 +1075,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    book_sheet, _, _ = get_sheets()
+    book_sheet, _, _, _, _ = get_sheets()
     if not book_sheet:
         await update.message.reply_text("⚠️ শিট সংযোগ পাওয়া যায়নি")
         return
@@ -724,7 +1091,8 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     aliases = target.caption or ""
 
     try:
-        await asyncio.to_thread(book_sheet.append_row, [book_name, target.document.file_id, aliases])
+        # row format: title | file_id | aliases | book_id(optional)
+        await asyncio.to_thread(book_sheet.append_row, [book_name, target.document.file_id, aliases, ""])
         invalidate_book_cache()
         await update.message.reply_text(f"✅ বই আপলোড হয়েছে: {book_name}")
     except Exception as e:
@@ -732,21 +1100,72 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ আপলোডে এরর হয়েছে")
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def sync_monthly_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
+    _, _, _, _, monthly_item_sheet = get_sheets()
+    if not monthly_item_sheet:
+        await update.message.reply_text("⚠️ MonthlyItems sheet পাওয়া যায়নি")
+        return
+
+    values = await asyncio.to_thread(monthly_item_sheet.get_all_values)
+    if len(values) <= 1:
+        await update.message.reply_text("⚠️ MonthlyItems sheet খালি")
+        return
+
+    rows = values[1:]
+    _book_rows, indexed, _titles, lookup, by_book_id = await get_book_cache()
+    updated = 0
+
+    for i, row in enumerate(rows, start=2):
+        row = row + [""] * (8 - len(row))
+        item_id, _cat, _year, _month, _section, item_name, book_id, title_hint = row[:8]
+        if not item_id or book_id.strip():
+            continue
+
+        matched_row = None
+        for candidate in [item_name, title_hint]:
+            candidate_norm = normalize(candidate)
+            if not candidate_norm:
+                continue
+            if candidate_norm in lookup and lookup[candidate_norm]:
+                matched_row = lookup[candidate_norm][0]
+                break
+            for book_row, title_norm in indexed:
+                if candidate_norm in title_norm or title_norm in candidate_norm:
+                    matched_row = book_row
+                    break
+            if matched_row:
+                break
+
+        if matched_row and len(matched_row) >= 4 and str(matched_row[3]).strip():
+            await asyncio.to_thread(monthly_item_sheet.update_cell, i, 7, str(matched_row[3]).strip())
+            updated += 1
+        elif matched_row and len(matched_row) >= 1:
+            # যদি books sheet-এ book_id না থাকে, অন্তত title hint update করে রাখি
+            await asyncio.to_thread(monthly_item_sheet.update_cell, i, 8, str(matched_row[0]).strip())
+            updated += 1
+
+    invalidate_monthly_cache()
+    await update.message.reply_text(f"✅ Monthly items sync শেষ। Updated rows: {updated}")
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    overview_lookup, items_by_month, items_by_id = await get_monthly_cache()
     users_count = len(USER_CACHE["ids"])
     books_count = len(BOOK_CACHE["rows"])
-    pending_delivery_chats = len(DELIVERY_QUEUE_BY_CHAT)
-    active_delivery_chats = len(ACTIVE_DELIVERIES)
     await update.message.reply_text(
         "📊 লাইভ স্ট্যাটাস:\n"
         f"ইউজার: {users_count}\n"
         f"মোট বই: {books_count}\n"
+        f"মাসিক সেকশন: {len(overview_lookup)}\n"
+        f"মাসিক আইটেম: {len(items_by_id)}\n"
         f"পেন্ডিং লগ: {len(LOG_QUEUE)}\n"
-        f"অ্যাক্টিভ ডেলিভারি: {active_delivery_chats}\n"
-        f"কিউতে থাকা চ্যাট: {pending_delivery_chats}"
+        f"অ্যাক্টিভ ডেলিভারি: {len(ACTIVE_DELIVERIES)}\n"
+        f"কিউতে থাকা চ্যাট: {len(DELIVERY_QUEUE_BY_CHAT)}"
     )
 
 
@@ -754,7 +1173,8 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await get_book_cache(force=True)
-    await update.message.reply_text("✅ বইয়ের cache refresh হয়েছে")
+    await get_monthly_cache(force=True)
+    await update.message.reply_text("✅ বই ও মাসিক পড়াশোনার cache refresh হয়েছে")
 
 
 # ================= HANDLERS =================
@@ -768,7 +1188,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not user or not text:
         return
 
-    # admin reply routing
     if user.id == ADMIN_ID and update.message.reply_to_message:
         target_chat_id = _admin_reply_map.get(update.message.reply_to_message.message_id)
         if target_chat_id:
@@ -824,18 +1243,90 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.from_user.id,
             f"@{query.from_user.username}" if query.from_user.username else "",
         )
+        return
+
+    if data == "ms|home":
+        try:
+            await query.message.edit_text("📚 মাসিক পড়াশোনা দেখতে ক্যাটাগরি নির্বাচন করুন:", reply_markup=monthly_category_keyboard())
+        except Exception:
+            await query.message.reply_text("📚 মাসিক পড়াশোনা দেখতে ক্যাটাগরি নির্বাচন করুন:", reply_markup=monthly_category_keyboard())
+        return
+
+    if data == "ms|back|root":
+        try:
+            await query.message.edit_text(
+                "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম।\n\nআপনার প্রয়োজনীয় বইয়ের নাম লিখুন।\nমাসিক পড়াশোনা দেখতে নিচের বাটনে ক্লিক করুন।",
+                reply_markup=monthly_main_keyboard(),
+            )
+        except Exception:
+            await query.message.reply_text("মাসিক পড়াশোনা দেখতে নিচের বাটনে ক্লিক করুন।", reply_markup=monthly_main_keyboard())
+        return
+
+    if data.startswith("ms|cat|"):
+        _, _, category = data.split("|", 2)
+        try:
+            await query.message.edit_text(
+                f"📅 {CATEGORY_BN.get(category, category)}দের {DEFAULT_YEAR} সালের মাস নির্বাচন করুন:",
+                reply_markup=monthly_month_keyboard(category, DEFAULT_YEAR),
+            )
+        except Exception:
+            await query.message.reply_text(
+                f"📅 {CATEGORY_BN.get(category, category)}দের {DEFAULT_YEAR} সালের মাস নির্বাচন করুন:",
+                reply_markup=monthly_month_keyboard(category, DEFAULT_YEAR),
+            )
+        return
+
+    if data.startswith("ms|month|"):
+        try:
+            _, _, category, year, month = data.split("|", 4)
+        except ValueError:
+            await query.message.reply_text("⚠️ মাসের ডাটা ঠিক নেই।")
+            return
+        await send_monthly_overview_message(query.message, category, year, month)
+        return
+
+    if data.startswith("ms|pdf|"):
+        try:
+            _, _, item_id = data.split("|", 2)
+        except ValueError:
+            await query.message.reply_text("⚠️ PDF ডাটা ঠিক নেই।")
+            return
+
+        _overview_lookup, _items_by_month, items_by_id = await get_monthly_cache()
+        item = items_by_id.get(item_id)
+        if not item:
+            await query.message.reply_text("⚠️ এই মাসিক আইটেমটি পাওয়া যায়নি।")
+            return
+
+        row = await resolve_book_row_from_monthly_item(item)
+        if not row:
+            await query.message.reply_text("⚠️ এই বইটির PDF এখনও যুক্ত করা হয়নি।")
+            return
+
+        await query.message.reply_text(f"📥 {item['item_name']} PDF পাঠানো হচ্ছে...")
+        await queue_book_delivery(
+            context,
+            query.message.chat.id,
+            [row],
+            query.from_user.id,
+            f"@{query.from_user.username}" if query.from_user.username else "",
+            item["item_name"],
+            normalize(item["item_name"]),
+            note=f"monthly_item_id={item_id}",
+        )
+        return
 
 
 # ================= STARTUP =================
 
 async def startup_task(app: Application):
     global READY_CHAT_IDS, SCHEDULER_LOCK
-
     READY_CHAT_IDS = asyncio.Queue()
     SCHEDULER_LOCK = asyncio.Lock()
 
     await load_users_initial()
     await get_book_cache()
+    await get_monthly_cache()
 
     app.create_task(background_sync_task())
     for worker_no in range(1, DELIVERY_WORKERS + 1):
@@ -844,19 +1335,18 @@ async def startup_task(app: Application):
     logger.info("Startup complete. Workers=%s", DELIVERY_WORKERS)
 
 
+# ================= APP =================
+
 def build_application() -> Application:
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .concurrent_updates(512)
-        .build()
-    )
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(512).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("monthly", monthly_command))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("upload", upload_command))
+    app.add_handler(CommandHandler("syncmonthly", sync_monthly_command))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("refresh", refresh_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
