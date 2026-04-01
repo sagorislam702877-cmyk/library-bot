@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -13,12 +12,30 @@ from typing import Any
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+# ✅ GOOGLE CREDS AUTO CREATE
+google_creds_json = os.environ.get("GOOGLE_CREDS_JSON", "").strip()
+
+if google_creds_json and not os.path.exists("creds.json"):
+    with open("creds.json", "w", encoding="utf-8") as f:
+        f.write(google_creds_json)
+
+# ✅ NOW IMPORT GOOGLE LIBS
 import gspread
 from flask import Flask
 from oauth2client.service_account import ServiceAccountCredentials
+
+# ✅ TELEGRAM IMPORTS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
