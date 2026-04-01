@@ -398,13 +398,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_monthly_message(update.message, item["category"], item["year"], item["month"], item_id)
             return
     await update.message.reply_text(
-        "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম।\n\nআপনার প্রয়োজনীয় বইয়ের নাম লিখুন।\nমাসিক পড়াশোনা দেখতে নিচের ভাসমান বাটন বা /monthly ব্যবহার করুন।",
+       "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম।\n\n"
+        "আপনার প্রয়োজনীয় বইয়ের নাম লিখুন।\n"
+        "মাসিক পড়াশোনা দেখতে নিচের বাটনে ক্লিক করুন।\n"
+        "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সট লিখুন",
         reply_markup=main_reply_keyboard(),
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("কমান্ডসমূহ:\n/monthly - মাসিক পড়াশোনা\n/syncplan - GitHub JSON sync (admin)\n/upload - বই upload (admin)\n/refresh - cache refresh (admin)", reply_markup=main_reply_keyboard())
+    await update.message.reply_text("বট ব্যবহারের নিয়মাবলী:\n\n"
+        "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
+        "২. মাসিক পড়াশোনা: /monthly লিখুন বা Start-এর বাটন চাপুন।\n"
+        "৩. এডমিন: /admin লিখে আপনার কথা লিখুন।\n"
+        "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন", 
+        reply_markup=main_reply_keyboard())
 
 
 async def monthly_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
