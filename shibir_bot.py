@@ -612,4 +612,284 @@ async def process_book_search(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
 
             await context.bot.send_message(
                 chat_id=chat_id,
-         
+                text=(
+                    f"📚 '{user_text_raw}' সম্পর্কিত প্রায় {len(matched)} টি বই পাওয়া গেছে। "
+                    "একসাথে এত বই পাঠালে বট স্লো হয়ে যায়।\n\n"
+                    "দয়া করে নিচের তালিকা থেকে নির্দিষ্ট বইটি বেছে নিন:"
+                ),
+                reply_markup=make_inline_keyboard(suggestions),
+            )
+            await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "TOO_MANY_MATCHES", suggestions[0] if suggestions else "")
+            return
+
+        close_keys = get_close_matches(user_norm, list(lookup.keys()), n=5, cutoff=0.72)
+        if close_keys:
+            suggestions = []
+            for key in close_keys:
+                for row in lookup.get(key, []):
+                    title = str(row[0]).strip()
+                    if title and title not in suggestions:
+                        suggestions.append(title)
+                    if len(suggestions) >= MAX_INLINE_SUGGESTIONS:
+                        break
+                if len(suggestions) >= MAX_INLINE_SUGGESTIONS:
+                    break
+
+            if suggestions:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="🤖 আমি কয়েকটা সম্ভাব্য বই খুঁজে পেয়েছি:",
+                    reply_markup=make_inline_keyboard(suggestions),
+                )
+                await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "SUGGESTION", suggestions[0])
+                return
+
+        await context.bot.send_message(chat_id=chat_id, text="❌ বইটি খুঁজে পাওয়া যাচ্ছে না")
+        await append_log("search", user_id, username, chat_id, user_text_raw, user_norm, "MISS")
+
+    except Exception as e:
+        logging.error(f"Search error: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ সার্ভারে সমস্যা হয়েছে। একটু পর চেষ্টা করুন।")
+
+
+# ================= COMMANDS =================
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ensure_user_saved(update.effective_user.id)
+    await update.message.reply_text(
+        "আসসালামু আলাইকুম। অনলাইন লাইব্রেরিতে স্বাগতম। আপনার প্রয়োজনীয় বইয়ের নামটি লিখুন।\n"
+        "এডমিনের সাথে কথা বলতে /admin + আপনার টেক্সটি লিখুন"
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "বট ব্যবহারের নিয়মাবলী:\n\n"
+        "১. বই খোঁজা: সরাসরি বইয়ের নাম লিখে মেসেজ দিন।\n"
+        "২. এডমিন: এডমিনের সাথে যোগাযোগ করতে চাইলে /admin লিখে আপনার কথা লিখুন।\n"
+        "   যেমন: /admin ভাই আমার অমুক বই প্রয়োজন"
+    )
+
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text or ""
+    parts = text.split(maxsplit=1)
+    body = parts[1].strip() if len(parts) > 1 else ""
+
+    if not body:
+        await update.message.reply_text("ব্যবহার: /admin আপনার মেসেজ")
+        return
+
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    username = f"@{user.username}" if user.username else "No username"
+
+    msg = (
+        f"📩 নতুন ইউজার মেসেজ\n\n"
+        f"নাম: {user.full_name}\n"
+        f"ইউজারনেম: {username}\n"
+        f"ইউজার আইডি: {user.id}\n"
+        f"চ্যাট আইডি: {chat_id}\n\n"
+        f"মেসেজ:\n{body}"
+    )
+    sent = await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
+    _admin_reply_map[sent.message_id] = chat_id
+    await update.message.reply_text("✅ মেসেজ এডমিনের কাছে পাঠানো হয়েছে")
+    await append_log("admin_message", user.id, username, chat_id, body, normalize(body), "SENT")
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    text = update.message.text or ""
+    parts = text.split(maxsplit=1)
+    broadcast_text = parts[1].strip() if len(parts) > 1 else ""
+
+    if not broadcast_text and update.message.reply_to_message:
+        broadcast_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
+
+    if not broadcast_text:
+        await update.message.reply_text("ব্যবহার: /broadcast আপনার মেসেজ")
+        return
+
+    await update.message.reply_text("📢 ব্রডকাস্ট শুরু হয়েছে। ব্যাকগ্রাউন্ডে মেসেজ যাচ্ছে...")
+
+    async def run_broadcast():
+        success, failed = 0, 0
+        users = list(USER_CACHE["ids"])
+        for i in range(0, len(users), 25):
+            chunk = users[i:i + 25]
+            for uid in chunk:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=broadcast_text)
+                    success += 1
+                except Exception:
+                    failed += 1
+            await asyncio.sleep(0.4)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"✅ Broadcast শেষ\nসফল: {success}\nব্যর্থ: {failed}")
+
+    context.application.create_task(run_broadcast())
+
+
+async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    book_sheet, _, _ = await get_sheets()
+    if not book_sheet:
+        await update.message.reply_text("⚠️ শিট কানেক্ট হয়নি। পরে আবার চেষ্টা করুন।")
+        return
+
+    target = update.message.reply_to_message
+    if not target or not target.document:
+        await update.message.reply_text("ব্যবহার: ডক ফাইলে রিপ্লাই দিয়ে /upload বা /upload বইয়ের নাম দিন।")
+        return
+
+    text = update.message.text or ""
+    parts = text.split(maxsplit=1)
+    book_name = parts[1].strip() if len(parts) > 1 else (target.document.file_name or "অজানা বই")
+
+    try:
+        caption = target.caption or ""
+        await asyncio.to_thread(book_sheet.append_row, [book_name, target.document.file_id, caption])
+        invalidate_book_cache()
+        await update.message.reply_text(f"✅ বই আপলোড হয়েছে: {book_name}")
+    except Exception as e:
+        logging.error(f"Upload error: {e}")
+        await update.message.reply_text("⚠️ এরর হয়েছে।")
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    users_count = len(USER_CACHE["ids"])
+    books_count = len(BOOK_CACHE["rows"])
+    queue_size = DELIVERY_QUEUE.qsize() if DELIVERY_QUEUE else 0
+    await update.message.reply_text(
+        f"📊 লাইভ স্ট্যাটাস:\nইউজার: {users_count}\nমোট বই: {books_count}\nপেন্ডিং লগ (Queue): {len(LOG_QUEUE)}\nডেলিভারি কিউ: {queue_size}"
+    )
+
+
+# ================= HANDLERS =================
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    user = update.effective_user
+    text = update.message.text.strip()
+
+    if user.id == ADMIN_ID and update.message.reply_to_message:
+        target_chat_id = _admin_reply_map.get(update.message.reply_to_message.message_id)
+        if target_chat_id:
+            try:
+                await context.bot.send_message(chat_id=target_chat_id, text=f"👨‍💼 এডমিন: {text}")
+                await update.message.reply_text("✅ রিপ্লাই পাঠানো হয়েছে")
+            except Exception:
+                await update.message.reply_text("⚠️ পাঠানো যায়নি")
+        return
+
+    await process_book_search(
+        context,
+        update.effective_chat.id,
+        text,
+        user.id,
+        f"@{user.username}" if user.username else "",
+    )
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if not data.startswith("pick|"):
+        return
+
+    try:
+        _, token, idx = data.split("|", 2)
+        idx_int = int(idx)
+    except Exception:
+        await query.message.reply_text("⚠️ সেশন শেষ, আবার সার্চ করুন।")
+        return
+
+    async with _callback_cache_lock:
+        payload = _callback_cache.get(token)
+
+    if not payload:
+        await query.message.reply_text("⚠️ সেশন শেষ, আবার সার্চ করুন।")
+        return
+
+    titles = payload.get("titles", [])
+    if idx_int >= len(titles):
+        await query.message.reply_text("⚠️ সেশন শেষ, আবার সার্চ করুন।")
+        return
+
+    selected_title = titles[idx_int]
+    try:
+        await query.message.edit_text(f"🔎 খোঁজা হচ্ছে: {selected_title}")
+    except BadRequest:
+        pass
+
+    await process_book_search(
+        context,
+        query.message.chat.id,
+        selected_title,
+        query.from_user.id,
+        f"@{query.from_user.username}" if query.from_user.username else "",
+    )
+
+
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logging.exception("Unhandled exception while handling an update", exc_info=context.error)
+
+
+# ================= STARTUP =================
+
+
+async def startup_task(application: Application):
+    await load_users_initial()
+    await get_book_cache(force=True)
+    await start_delivery_system(application)
+    application.create_task(background_sync_task())
+    application.create_task(refresh_book_cache_periodically())
+    application.create_task(cleanup_callback_cache_periodically())
+
+
+async def post_init(application: Application):
+    await startup_task(application)
+
+
+# ================= MAIN RUNNER =================
+
+
+def main():
+    Thread(target=run_web, daemon=True).start()
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(100)
+        .post_init(post_init)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("upload", upload_command))
+    app.add_handler(CommandHandler("stats", stats))
+
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    app.add_error_handler(handle_error)
+
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
